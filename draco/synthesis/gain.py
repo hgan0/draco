@@ -42,7 +42,7 @@ class BaseGains(task.SingleTask):
 
         time = data.time
 
-        gain_data = containers.GainData(time=time, axes_from=data, comm=data.comm)
+        gain_data = containers.GainData(axes_from=data, comm=data.comm)
         gain_data.redistribute("input")
 
         # Save some useful attributes
@@ -258,7 +258,6 @@ class RandomGains(BaseGains):
     _prev_phase = None
 
     def _generate_amp(self, time):
-
         # Generate the correlation function
         cf_amp = self._corr_func(self.corr_length_amp, self.sigma_amp)
         ninput = self.ninput_local
@@ -279,7 +278,6 @@ class RandomGains(BaseGains):
         return gain_amp
 
     def _generate_phase(self, time):
-
         # Generate the correlation function
         cf_phase = self._corr_func(self.corr_length_phase, self.sigma_phase)
         ninput = self.ninput_local
@@ -437,7 +435,6 @@ class GainStacker(task.SingleTask):
 
 
 def _ensure_list(x):
-
     if hasattr(x, "__iter__"):
         y = [xx for xx in x]
     else:
@@ -507,8 +504,9 @@ def gaussian_realisation(x, corrfunc, n, rcond=1e-12):
 
 
 def _realisation(C, n, rcond):
-    """Create a realisation of the given covariance matrix. Regularise by
-    throwing away small eigenvalues.
+    """Create a realisation of the given covariance matrix.
+
+    Regularise by throwing away small eigenvalues.
     """
     import scipy.linalg as la
 

@@ -1,7 +1,4 @@
-"""
-======================================================
-Map making tasks (:mod:`~draco.analysis.ringmapmaker`)
-======================================================
+"""Map making tasks (:mod:`~draco.analysis.ringmapmaker`).
 
 .. currentmodule:: draco.analysis.ringmapmaker
 
@@ -50,6 +47,7 @@ class MakeVisGrid(task.SingleTask):
         Parameters
         ----------
         tel : TransitTelescope
+            Telescope object to use
         """
         self.telescope = io.get_telescope(tel)
 
@@ -65,7 +63,6 @@ class MakeVisGrid(task.SingleTask):
         -------
         rm : containers.RingMap
         """
-
         # Convert prodstack into a type that can be easily compared against
         # `uniquepairs`
         ps_sstream = structured_to_unstructured(sstream.prodstack, dtype=np.int16)
@@ -140,7 +137,6 @@ class MakeVisGrid(task.SingleTask):
 
         # Unpack visibilities into new array
         for vis_ind, (p_ind, x_ind, y_ind) in enumerate(zip(pind, xind, yind)):
-
             # Different behavior for intracylinder and intercylinder baselines.
             gsv[p_ind, :, x_ind, y_ind, :] = ssv[:, vis_ind]
             gsw[p_ind, :, x_ind, y_ind, :] = ssw[:, vis_ind]
@@ -200,14 +196,13 @@ class BeamformNS(task.SingleTask):
 
         Parameters
         ----------
-        sstream : VisGridStream
+        gstream : VisGridStream
             The input stream.
 
         Returns
         -------
         bf : HybridVisStream
         """
-
         # Redistribute over frequency
         gstream.redistribute("freq")
 
@@ -245,7 +240,6 @@ class BeamformNS(task.SingleTask):
 
         # Loop over local frequencies and fill ring map
         for lfi, fi in gstream.vis[:].enumerate(1):
-
             # Get the current frequency and wavelength
             fr = freq[fi]
             wv = scipy.constants.c * 1e-6 / fr
@@ -332,7 +326,6 @@ class BeamformEW(task.SingleTask):
         -------
         rm : RingMap
         """
-
         # Redistribute over frequency
         hstream.redistribute("freq")
 
@@ -391,7 +384,6 @@ class BeamformEW(task.SingleTask):
 
         # Loop over local frequencies and fill ring map
         for lfi, fi in hstream.vis[:].enumerate(axis=1):
-
             # Rotate the polarisations
             v = np.tensordot(P, hvv[:, lfi], axes=(1, 0))
             b = np.tensordot(P, hvb[:, lfi], axes=(1, 0))
@@ -514,7 +506,6 @@ class DeconvolveHybridMBase(task.SingleTask):
         ringmap
             The deconvolved ring map.
         """
-
         # Validate that the visibilites and beams match
         if not np.array_equal(hybrid_vis_m.freq, hybrid_beam_m.freq):
             raise ValueError("Frequencies do not match for beam and visibilities.")
@@ -597,7 +588,6 @@ class DeconvolveHybridMBase(task.SingleTask):
 
         # Loop over frequencies
         for lfi, freq in enumerate(local_freq):
-
             find = (slice(None),) * 3 + (lfi,)
 
             hvf = hv[find]
@@ -691,7 +681,6 @@ class DeconvolveHybridMBase(task.SingleTask):
             This will influence the shape of the synthesized beam in
             the EW direction.
         """
-
         msg = "independent" if self.window_scaled else "dependent"
         self.log.info(
             f"Applying a frequency {msg} {self.window_type} window "
@@ -748,14 +737,12 @@ class DeconvolveHybridMBase(task.SingleTask):
 
         for ff in range(nfreq):
             for ee in range(nel):
-
                 mmin = min_m[ff, ee]
                 mmax = max_m[ff, ee]
 
                 in_range = np.flatnonzero((m >= mmin) & (m <= mmax))
 
                 if in_range.size > 0:
-
                     x = (m[in_range] - mmin) / (mmax - mmin)
 
                     window[ff, in_range, ee] = tools.window_generalised(
@@ -822,10 +809,9 @@ class DeconvolveAnalyticalBeam(DeconvolveHybridMBase):
 
         Parameters
         ----------
-        manager
+        telescope
             The telescope object to use.
         """
-
         self.telescope = io.get_telescope(telescope)
 
     def process(
@@ -844,7 +830,6 @@ class DeconvolveAnalyticalBeam(DeconvolveHybridMBase):
         ringmap
             The deconvolved ring map.
         """
-
         # Prepare the external beam m-modes and save to class attribute
         hybrid_beam_m = self._get_beam_mmodes(hybrid_vis_m)
 
@@ -853,7 +838,6 @@ class DeconvolveAnalyticalBeam(DeconvolveHybridMBase):
     def _get_beam_mmodes(
         self, hybrid_vis_m: containers.HybridVisMModes
     ) -> containers.HybridVisMModes:
-
         # NOTE: Coefficients taken from Mateus's fits, but adjust to fix the definition
         # of sigma, and be the widths for the "voltage" beam
         def sig_chime_X(freq, dec):
@@ -891,7 +875,6 @@ class DeconvolveAnalyticalBeam(DeconvolveHybridMBase):
 
         # Loop over all local frequencies and calculate the beam m-modes
         for lfi, fi in hybrid_vis_m.vis[:].enumerate(axis=3):
-
             freq = hybrid_vis_m.freq[fi]
 
             # Calculate the baseline distance in wavelengths
@@ -906,7 +889,6 @@ class DeconvolveAnalyticalBeam(DeconvolveHybridMBase):
             # each polarisation and declination
             sig = np.zeros((pol.size, dec.size), dtype=dec.dtype)
             for pi, (pa, pb) in enumerate(pol):
-
                 # Get the effective beamwidth for the polarisation combination
                 sig_a = beam_width[pa](freq, dec)
                 sig_b = beam_width[pb](freq, dec)
@@ -946,7 +928,6 @@ class TikhonovRingMapMaker(DeconvolveHybridMBase):
     inv_SN = config.Property(proptype=float, default=1e-6)
 
     def _get_weight(self, inv_var):
-
         if self.weight_ew == "inverse_variance":
             weight_ew = inv_var
 
@@ -972,7 +953,6 @@ class TikhonovRingMapMaker(DeconvolveHybridMBase):
         return weight_ew
 
     def _get_regularisation(self, *args):
-
         return self.inv_SN
 
 
@@ -1021,7 +1001,6 @@ class WienerRingMapMaker(DeconvolveHybridMBase):
     weight_ew = "inverse_variance"
 
     def _get_regularisation(self, freq, m, *args):
-
         gal = (
             self.gal_amp
             * (freq / self.pivot_freq) ** self.gal_alpha
@@ -1036,7 +1015,6 @@ class WienerRingMapMaker(DeconvolveHybridMBase):
         return tools.invert_no_zero(spectrum[:, np.newaxis, np.newaxis])
 
     def _get_weight(self, inv_var):
-
         weight_ew = inv_var
         if self.exclude_intracyl:
             weight_ew[..., 0, :] = 0.0
@@ -1082,7 +1060,6 @@ class RADependentWeights(task.SingleTask):
             The input ringmap container with the `weight` dataset scaled
             by an RA dependent factor determined from hybrid_vis.
         """
-
         # Determine how the EW baselines were averaged in the ringmap maker
         exclude_intracyl = ringmap.attrs.get("exclude_intracyl", None)
         weight_scheme = ringmap.attrs.get("weight_ew", None)
@@ -1103,11 +1080,9 @@ class RADependentWeights(task.SingleTask):
 
         # Determine the weights that where used to average over the EW baselines
         if weight_scheme == "inverse_variance":
-
             weight_ew = tools.invert_no_zero(var_time_avg)
 
         else:
-
             n_ew = var.shape[-2]
 
             if weight_scheme == "uniform":
@@ -1149,7 +1124,6 @@ def find_basis(baselines):
     xhat, yhat : np.ndarray[2]
         Unit vectors pointing in the mostly X and mostly Y directions of the grid.
     """
-
     # Find the shortest baseline, this should give one of the axes
     bl = np.abs(baselines)
     bl[bl == 0] = 1e30

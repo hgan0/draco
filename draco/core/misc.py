@@ -59,7 +59,6 @@ class ApplyGain(task.SingleTask):
             )
 
         if isinstance(gain, containers.StaticGainData):
-
             # Extract gain array and add in a time axis
             gain_arr = gain.gain[:][..., np.newaxis]
 
@@ -77,7 +76,6 @@ class ApplyGain(task.SingleTask):
                 containers.CommonModeSiderealGainData,
             ),
         ):
-
             # Extract gain array
             gain_arr = gain.gain[:]
 
@@ -91,7 +89,6 @@ class ApplyGain(task.SingleTask):
                 gain,
                 (containers.SiderealGainData, containers.CommonModeSiderealGainData),
             ):
-
                 # Check that we are defined at the same RA samples
                 if (gain.ra != tstream.ra).any():
                     raise RuntimeError(
@@ -201,12 +198,14 @@ class AccumulateList(task.MPILoggedTask):
         self._items = []
 
     def next(self, input_):
+        """Append an input to the list of inputs."""
         self._items.append(input_)
 
     def finish(self):
+        """Remove the internal reference.
 
-        # Remove the internal reference to the items so they don't hang around after the task
-        # finishes
+        Prevents the items from hanging around after the task finishes.
+        """
         items = self._items
         del self._items
 
@@ -219,6 +218,12 @@ class CheckMPIEnvironment(task.MPILoggedTask):
     timeout = config.Property(proptype=int, default=240)
 
     def setup(self):
+        """Send random messages between all ranks.
+
+        Tests to ensure that all messages are received within a specified amount
+        of time, and that the messages received are the same as those sent (i.e.
+        nothing was corrupted).
+        """
         import time
 
         comm = self.comm
@@ -239,7 +244,6 @@ class CheckMPIEnvironment(task.MPILoggedTask):
         start_time = time.time()
 
         while time.time() - start_time < self.timeout:
-
             success = all([r.get_status() for r in results])
 
             if success:
@@ -270,12 +274,12 @@ class MakeCopy(task.SingleTask):
 
     def process(self, data):
         """Return a copy of the given container.
+
         Parameters
         ----------
         data : containers.ContainerBase
             The container to copy.
         """
-
         return data.copy()
 
 

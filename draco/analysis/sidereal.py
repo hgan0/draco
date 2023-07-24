@@ -53,7 +53,7 @@ class SiderealGrouper(task.SingleTask):
 
         Parameters
         ----------
-        observer : :class:`~caput.time.Observer`
+        manager : :class:`~caput.time.Observer`
             An Observer object holding the geographic location of the telescope.
             Note that :class:`~drift.core.TransitTelescope` instances are also
             Observers.
@@ -75,7 +75,6 @@ class SiderealGrouper(task.SingleTask):
             Returns the timestream of each sidereal day when we have received
             the last file, otherwise returns :obj:`None`.
         """
-
         # This is the start and the end of the LSDs of the file only if padding
         # is chosen to be 0 (default). If padding is set to some value then 'lsd_start'
         # will actually correspond to the start of of the requested time frame (incl
@@ -149,6 +148,9 @@ class SiderealGrouper(task.SingleTask):
         ts.attrs["tag"] = "lsd_%i" % lsd
         ts.attrs["lsd"] = lsd
 
+        # Clear the timestream list since these days have already been processed
+        self._timestream_list = []
+
         return ts
 
 
@@ -179,7 +181,7 @@ class SiderealRegridder(Regridder):
 
         Parameters
         ----------
-        observer : :class:`~caput.time.Observer`
+        manager : :class:`~caput.time.Observer`
             An Observer object holding the geographic location of the telescope.
             Note that :class:`~drift.core.TransitTelescope` instances are also
             Observers.
@@ -251,7 +253,6 @@ class SiderealRegridder(Regridder):
         return sdata
 
     def _get_phase(self, freq, prod, lsd):
-
         # Determine if any baselines contains masked feeds
         # These baselines will be flagged since they do not
         # have valid baseline distances.
@@ -280,7 +281,6 @@ class SiderealRegridder(Regridder):
 
 
 def _search_nearest(x, xeval):
-
     index_next = np.searchsorted(x, xeval, side="left")
 
     index_previous = np.maximum(0, index_next - 1)
@@ -299,7 +299,6 @@ class SiderealRegridderNearest(SiderealRegridder):
     """Regrid onto the sidereal day using nearest neighbor interpolation."""
 
     def _regrid(self, vis, weight, lsd):
-
         # Create a regular grid
         interp_grid = np.arange(0, self.samples, dtype=np.float64) / self.samples
         interp_grid = interp_grid * (self.end - self.start) + self.start
@@ -324,7 +323,6 @@ class SiderealRegridderLinear(SiderealRegridder):
     """Regrid onto the sidereal day using linear interpolation."""
 
     def _regrid(self, vis, weight, lsd):
-
         # Create a regular grid
         interp_grid = np.arange(0, self.samples, dtype=np.float64) / self.samples
         interp_grid = interp_grid * (self.end - self.start) + self.start
@@ -372,7 +370,6 @@ class SiderealRegridderLinear(SiderealRegridder):
 
         # Loop over frequencies to reduce memory usage
         for ff in range(shp[0]):
-
             fvis = vis[ff]
             fweight = weight[ff]
 
@@ -404,7 +401,6 @@ class SiderealRegridderCubic(SiderealRegridder):
     """Regrid onto the sidereal day using cubic Hermite spline interpolation."""
 
     def _regrid(self, vis, weight, lsd):
-
         # Create a regular grid
         interp_grid = np.arange(0, self.samples, dtype=np.float64) / self.samples
         interp_grid = interp_grid * (self.end - self.start) + self.start
@@ -454,7 +450,6 @@ class SiderealRegridderCubic(SiderealRegridder):
 
         # Loop over frequencies to reduce memory usage
         for ff in range(shp[0]):
-
             fvis = vis[ff]
             fweight = weight[ff]
 
@@ -469,7 +464,6 @@ class SiderealRegridderCubic(SiderealRegridder):
             finterp_var = np.zeros(shp[1:], dtype=weight.dtype)
 
             for ii, cc in zip(index, coeff):
-
                 finterp_flag &= fflag[:, ii]
                 finterp_var += cc**2 * fvar[:, ii]
 
@@ -540,7 +534,6 @@ class SiderealStacker(task.SingleTask):
         # If this is our first sidereal day, then initialize the
         # container that will hold the stack.
         if self.stack is None:
-
             self.stack = containers.empty_like(sdata)
 
             # Add stack-specific datasets
@@ -615,7 +608,6 @@ class SiderealStacker(task.SingleTask):
 
         # The calculations below are only required if the sample variance was requested
         if self.with_sample_variance:
-
             # Accumulate the sum of squared coefficients.
             self.sum_coeff_sq += coeff**2
 
@@ -650,7 +642,6 @@ class SiderealStacker(task.SingleTask):
         # Can be found in the stack.nsample dataset for uniform case
         # or the stack.weight dataset for inverse variance case.
         if self.with_sample_variance:
-
             if self.weight != "uniform":
                 norm = self.stack.weight[:]
 
@@ -701,11 +692,9 @@ class SiderealStackerMatch(task.SingleTask):
         sdata : containers.SiderealStream
             Individual sidereal day to stack up.
         """
-
         sdata.redistribute("freq")
 
         if self.stack is None:
-
             self.log.info("Starting new stack.")
 
             self.stack = containers.empty_like(sdata)
@@ -778,7 +767,6 @@ class SiderealStackerMatch(task.SingleTask):
         stack : containers.SiderealStream
             Stack of sidereal days.
         """
-
         self.stack.attrs["tag"] = self.tag
 
         Va = np.array(self.Vm).transpose(1, 2, 0)
@@ -791,7 +779,6 @@ class SiderealStackerMatch(task.SingleTask):
         # of the difficulty mapping the operations we would want to do into what numpy
         # allows
         for lfi in range(self.stack.vis[:].local_shape[0]):
-
             Ni_s = self.Ni_s[lfi]
             N_s = tools.invert_no_zero(Ni_s)
             V = Va[lfi] * N_s[:, np.newaxis]
@@ -823,7 +810,6 @@ class SiderealStackerMatch(task.SingleTask):
 
 
 def _ensure_list(x):
-
     if hasattr(x, "__iter__"):
         y = [xx for xx in x]
     else:

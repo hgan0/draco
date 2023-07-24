@@ -40,6 +40,11 @@ class DayenuDelayFilter(task.SingleTask):
         frequencies where the weights are nonzero for all times.
         Otherwise will construct a filter for all unique single-time
         frequency masks (can be significantly slower).  Default is True.
+    atten_threshold : float
+        Mask any frequency where the diagonal element of the filter
+        is less than this fraction of the median value over all
+        unmasked frequencies.  Default is 0.0 (i.e., do not mask
+        frequencies with low attenuation).
     """
 
     za_cut = config.Property(proptype=float, default=1.0)
@@ -47,6 +52,7 @@ class DayenuDelayFilter(task.SingleTask):
     epsilon = config.Property(proptype=float, default=1e-12)
     tauw = config.Property(proptype=float, default=0.100)
     single_mask = config.Property(proptype=bool, default=True)
+    atten_threshold = config.Property(proptype=float, default=0.0)
 
     def setup(self, telescope):
         """Set the telescope needed to obtain baselines.
@@ -54,10 +60,17 @@ class DayenuDelayFilter(task.SingleTask):
         Parameters
         ----------
         telescope : TransitTelescope
+            The telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
         self.log.info("Instrumental delay cut set to %0.3f micro-sec." % self.tauw)
+
+        if self.atten_threshold > 0.0:
+            self.log.info(
+                "Flagging frequencies with attenuation less "
+                f"than {self.atten_threshold:0.2f} of median attenuation."
+            )
 
     def process(self, stream):
         """Filter out delays from a SiderealStream or TimeStream.
@@ -93,7 +106,6 @@ class DayenuDelayFilter(task.SingleTask):
 
         # Loop over products
         for bb, bcut in enumerate(cutoff):
-
             t0 = time.time()
 
             # Flag frequencies and times with zero weight
@@ -131,6 +143,15 @@ class DayenuDelayFilter(task.SingleTask):
             if self.single_mask:
                 vis[:, bb] = np.matmul(NF[0], bvis)
                 weight[:, bb] = tools.invert_no_zero(np.matmul(NF[0] ** 2, bvar))
+
+                if self.atten_threshold > 0.0:
+                    diag = np.diag(NF[0])
+                    med_diag = np.median(diag[diag > 0.0])
+
+                    flag_low = diag > (self.atten_threshold * med_diag)
+
+                    weight[:, bb] *= flag_low[:, np.newaxis].astype(np.float32)
+
             else:
                 self.log.debug("There are %d unique masks/filters." % len(index))
                 for ii, ind in enumerate(index):
@@ -139,12 +160,19 @@ class DayenuDelayFilter(task.SingleTask):
                         np.matmul(NF[ii] ** 2, bvar[:, ind])
                     )
 
+                    if self.atten_threshold > 0.0:
+                        diag = np.diag(NF[ii])
+                        med_diag = np.median(diag[diag > 0.0])
+
+                        flag_low = diag > (self.atten_threshold * med_diag)
+
+                        weight[:, bb, ind] *= flag_low[:, np.newaxis].astype(np.float32)
+
             self.log.debug(f"Took {time.time() - t0:0.3f} seconds in total.")
 
         return stream
 
     def _get_cut(self, prod):
-
         baselines = (
             self.telescope.feedpositions[prod["input_a"], :]
             - self.telescope.feedpositions[prod["input_b"], :]
@@ -202,9 +230,7 @@ class DayenuDelayFilterMap(task.SingleTask):
 
     def setup(self):
         """Create the function used to determine the delay cutoff."""
-
         if self.filename is not None:
-
             fcut = containers.DelayCutoff.from_file(self.filename, distributed=False)
             kind = fcut.attrs.get("kind", "linear")
 
@@ -215,7 +241,6 @@ class DayenuDelayFilterMap(task.SingleTask):
 
             self._cut_interpolator = {}
             for pp, pol in enumerate(fcut.pol):
-
                 self._cut_interpolator[pol] = scipy.interpolate.interp1d(
                     fcut.el,
                     fcut.cutoff[pp],
@@ -270,13 +295,11 @@ class DayenuDelayFilterMap(task.SingleTask):
 
         # Loop over beam and polarisation
         for ind in np.ndindex(*lshp):
-
             wind = ind[1:]
 
             kwargs = {ax: ringmap.index_map[ax][ii] for ax, ii in zip(axes, ind)}
 
             for ee, el in enumerate(els):
-
                 t0 = time.time()
 
                 slc = ind + (slice(None), slice(None), ee)
@@ -319,12 +342,10 @@ class DayenuDelayFilterMap(task.SingleTask):
 
                 # Apply the filter
                 if self.single_mask:
-
                     rm[slc] = np.matmul(NF[0], erm)
                     weight[wslc] = tools.invert_no_zero(np.matmul(NF[0] ** 2, evar))
 
                     if self.atten_threshold > 0.0:
-
                         diag = np.diag(NF[0])
                         med_diag = np.median(diag[diag > 0.0])
 
@@ -333,7 +354,6 @@ class DayenuDelayFilterMap(task.SingleTask):
                         weight[wslc] *= flag_low[:, np.newaxis].astype(np.float32)
 
                 else:
-
                     for ii, rr in enumerate(index):
                         rm[ind][:, rr, ee] = np.matmul(NF[ii], erm[:, rr])
                         weight[wind][:, rr, ee] = tools.invert_no_zero(
@@ -341,7 +361,6 @@ class DayenuDelayFilterMap(task.SingleTask):
                         )
 
                         if self.atten_threshold > 0.0:
-
                             diag = np.diag(NF[ii])
                             med_diag = np.median(diag[diag > 0.0])
 
@@ -357,7 +376,6 @@ class DayenuDelayFilterMap(task.SingleTask):
 
     def _get_cut(self, el, pol=None, **kwargs):
         """Return the delay cutoff in micro-seconds."""
-
         if self._cut_interpolator is None:
             return self.tauw
 
@@ -400,6 +418,7 @@ class DayenuMFilter(task.SingleTask):
         Parameters
         ----------
         telescope : TransitTelescope
+            The telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
@@ -449,7 +468,6 @@ class DayenuMFilter(task.SingleTask):
 
         # Loop over frequencies
         for ff, nu in enumerate(freq):
-
             t0 = time.time()
 
             # The next several lines determine the mask as a function of time
@@ -488,7 +506,6 @@ class DayenuMFilter(task.SingleTask):
 
             # Loop over E-W baselines
             for uu, ub in enumerate(uniqb):
-
                 iub = np.flatnonzero(indexb == uu)
 
                 visfb = np.ascontiguousarray(vis[ff, iub])
@@ -512,7 +529,6 @@ class DayenuMFilter(task.SingleTask):
         return stream
 
     def _get_cut(self, freq, xsep):
-
         lmbda = units.c / (freq * 1e6)
         u = xsep / lmbda
         m = instantaneous_m(
@@ -547,7 +563,6 @@ def highpass_delay_filter(freq, tau_cut, flag, epsilon=1e-12):
         Maps the first axis of pinv to the original time axis.
         Apply pinv[i] to the time samples at index[i].
     """
-
     ishp = flag.shape
     nfreq = freq.size
     assert ishp[0] == nfreq
@@ -599,7 +614,6 @@ def bandpass_mmode_filter(ra, m_center, m_cut, flag, epsilon=1e-10):
         Maps the first axis of pinv to the original flag array.
         Apply pinv[i] to the sub-array at index[i].
     """
-
     ishp = flag.shape
     nra = ra.size
     assert ishp[-1] == nra
@@ -659,7 +673,6 @@ def lowpass_mmode_filter(ra, m_cut, flag, epsilon=1e-10):
         Maps the first axis of pinv to the original flag array.
         Apply pinv[i] to the sub-array at index[i].
     """
-
     ishp = flag.shape
     nra = ra.size
     assert ishp[-1] == nra
@@ -713,7 +726,6 @@ def highpass_mmode_filter(ra, m_cut, flag, epsilon=1e-10):
         Maps the first axis of pinv to the original flag array.
         Apply pinv[i] to the sub-array at index[i].
     """
-
     ishp = flag.shape
     nra = ra.size
     assert ishp[-1] == nra
@@ -762,7 +774,6 @@ def instantaneous_m(ha, lat, dec, u, v, w=0.0):
         The fringe-rate of the requested location on the sky
         as measured by the requested baseline.
     """
-
     deriv = u * (-1 * np.cos(dec) * np.cos(ha))
     deriv += v * (np.sin(lat) * np.cos(dec) * np.sin(ha))
     deriv += w * (-1 * np.cos(lat) * np.cos(dec) * np.sin(ha))

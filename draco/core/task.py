@@ -3,6 +3,7 @@
 import os
 import logging
 from inspect import getfullargspec
+from typing import Optional
 
 import numpy as np
 
@@ -28,7 +29,6 @@ class MPILogFilter(logging.Filter):
     def __init__(
         self, add_mpi_info=True, level_rank0=logging.INFO, level_all=logging.WARN
     ):
-
         from mpi4py import MPI
 
         self.add_mpi_info = add_mpi_info
@@ -39,8 +39,7 @@ class MPILogFilter(logging.Filter):
         self.comm = MPI.COMM_WORLD
 
     def filter(self, record):
-
-        # Add MPI info if desired
+        """Add MPI info if desired."""
         try:
             record.mpi_rank
         except AttributeError:
@@ -70,7 +69,6 @@ def _log_level(x):
     -------
     level : int
     """
-
     level_dict = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
@@ -101,7 +99,6 @@ class SetMPILogging(pipeline.TaskBase):
     level_all = config.Property(proptype=_log_level, default=logging.WARN)
 
     def __init__(self):
-
         from mpi4py import MPI
         import math
 
@@ -133,7 +130,6 @@ class LoggedTask(pipeline.TaskBase):
     log_level = config.Property(proptype=_log_level, default=None)
 
     def __init__(self):
-
         # Get the logger for this task
         self._log = logging.getLogger(
             "%s.%s" % (self.__module__, self.__class__.__name__)
@@ -150,14 +146,14 @@ class LoggedTask(pipeline.TaskBase):
 
 
 class MPITask(pipeline.TaskBase):
-    """Base class for MPI using tasks. Just ensures that the task gets a `comm`
-    attribute.
+    """Base class for MPI using tasks.
+
+    Just ensures that the task gets a `comm` attribute.
     """
 
     comm = None
 
     def __init__(self):
-
         from mpi4py import MPI
 
         # Set default communicator
@@ -176,7 +172,6 @@ class _AddRankLogAdapter(logging.LoggerAdapter):
     calling_obj = None
 
     def process(self, msg, kwargs):
-
         if "extra" not in kwargs:
             kwargs["extra"] = {}
 
@@ -190,7 +185,6 @@ class MPILoggedTask(MPITask, LoggedTask):
     """A task base that has MPI aware logging."""
 
     def __init__(self):
-
         # Initialise the base classes
         MPITask.__init__(self)
         LoggedTask.__init__(self)
@@ -266,10 +260,13 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
     compression : dict or bool, optional
         Set compression options for each dataset. Provided as a dict with the dataset
         names as keys and values for `chunks`, `compression`, and `compression_opts`.
-        If set to `False`, chunks and compression will be disabled for all datasets.
-        Otherwise, the default parameters set in the dataset spec are used.
-        Note that this will modify these parameters on the container itself, such that
-        if it is written out again downstream in the pipeline these will be used.
+        Any datasets not included in the dict (including if the dict is empty), will use
+        the default parameters set in the dataset spec. If set to `False` (or anything
+        that evaluates to `False`, other than an empty dict) chunks and compression will
+        be disabled for all datasets. If no argument in provided, the default parameters
+        set in the dataset spec are used. Note that this will modify these parameters on
+        the container itself, such that if it is written out again downstream in the
+        pipeline these will be used.
     output_root : string
         Pipeline settable parameter giving the first part of the output path.
         Deprecated in favour of `output_name`.
@@ -298,7 +295,7 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
     output_name = config.Property(default="{output_root}{tag}.h5", proptype=str)
     output_format = config.file_format()
     compression = config.Property(
-        default={}, proptype=lambda x: x if isinstance(x, dict) else bool(x)
+        default=True, proptype=lambda x: x if isinstance(x, dict) else bool(x)
     )
 
     nan_check = config.Property(default=True, proptype=bool)
@@ -338,7 +335,6 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
 
     def next(self, *input):
         """Should not need to override. Implement `process` instead."""
-
         self.log.info("Starting next for task %s" % self.__class__.__name__)
 
         self.comm.Barrier()
@@ -388,7 +384,6 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
 
     def finish(self):
         """Should not need to override. Implement `process_finish` instead."""
-
         class_name = self.__class__.__name__
 
         self.log.info(f"Starting finish for task {class_name}")
@@ -411,7 +406,6 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
         return output
 
     def _process_output(self, output):
-
         if not isinstance(output, memh5.MemDiskGroup):
             raise pipeline.PipelineRuntimeError(
                 f"Task must output a valid memh5 container; given {type(output)}"
@@ -437,7 +431,8 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
 
         return output
 
-    def _save_output(self, output):
+    def _save_output(self, output: memh5.MemDiskGroup) -> Optional[str]:
+        """Save the output and return the file path if it was saved."""
         if output is None:
             return
 
@@ -452,12 +447,8 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
                     datasets.append(root + key)
             return datasets
 
-        if not self.compression:
-            for ds in walk_dset_tree(output):
-                output._data._storage_root[ds].chunks = None
-                output._data._storage_root[ds].compression = None
-                output._data._storage_root[ds].compression_opts = None
-        else:
+        if isinstance(self.compression, dict):
+            # We want to overwrite some compression settings
             datasets = walk_dset_tree(output)
             for ds in self.compression:
                 if ds in datasets:
@@ -467,7 +458,10 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
                         )
                         setattr(output._data._storage_root[ds], key, val)
                     # shorthand for bitshuffle
-                    if output[ds].compression in ("bitshuffle", fileformats.H5FILTER):
+                    if output[ds].compression in (
+                        "bitshuffle",
+                        fileformats.H5FILTER,
+                    ):
                         output[ds].compression = fileformats.H5FILTER
                         if output[ds].compression_opts is None:
                             output._data._storage_root[ds].compression_opts = (
@@ -478,10 +472,15 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
                     self.log.warning(
                         f"Ignoring config entry in `compression` for non-existing dataset `{ds}`"
                     )
+        elif not self.compression:
+            # Disable compression
+            for ds in walk_dset_tree(output):
+                output._data._storage_root[ds].chunks = None
+                output._data._storage_root[ds].compression = None
+                output._data._storage_root[ds].compression_opts = None
 
         # Routine to write output if needed.
         if self.save:
-
             # add metadata to output
             metadata = {"versions": self.versions, "config": self.pipeline_config}
             for key, value in metadata.items():
@@ -504,6 +503,7 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
                 output,
                 file_format=self.output_format,
             )
+            return outfile
 
     def _nan_process_output(self, output):
         # Process the output to check for NaN's
@@ -518,7 +518,6 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
             nan_found = self._nan_check_walk(output)
 
             if nan_found and self.nan_dump:
-
                 # Construct the filename
                 tag = output.attrs["tag"] if "tag" in output.attrs else self._count
                 outfile = "nandump_" + self.__class__.__name__ + "_" + str(tag) + ".h5"
@@ -571,33 +570,30 @@ class SingleTask(MPILoggedTask, pipeline.BasicContMixin):
 
             # Check the dataset for non-finite numbers
             if isinstance(n, memh5.MemDataset):
-
                 # Try to test for NaN's and infs. This will fail for compound datatypes...
                 # casting to ndarray, bc MPI ranks may fall out of sync, if a nan or inf are found
                 arr = n[:].view(np.ndarray)
                 try:
-                    total_nan = np.isnan(arr).sum()
-                    total_inf = np.isinf(arr).sum()
+                    all_finite = np.isfinite(arr).all()
                 except TypeError:
                     continue
 
-                if total_nan > 0:
-                    self.log.info(
-                        "NaN's found in dataset %s [%i of %i elements]",
-                        n.name,
-                        total_nan,
-                        arr.size,
-                    )
-                    found = True
+                if not all_finite:
+                    nans = np.isnan(arr).sum()
+                    if nans > 0:
+                        self.log.info(
+                            f"NaN's found in dataset {n.name} [{nans} of {arr.size} elements]"
+                        )
+                        found = True
+                        break
 
-                if total_inf > 0:
-                    self.log.info(
-                        "Inf's found in dataset %s [%i of %i elements]",
-                        n.name,
-                        total_inf,
-                        arr.size,
-                    )
-                    found = True
+                    infs = np.isinf(arr).sum()
+                    if infs > 0:
+                        self.log.info(
+                            f"Inf's found in dataset {n.name} [{infs} of {arr.size} elements]"
+                        )
+                        found = True
+                        break
 
             elif isinstance(n, (memh5.MemGroup, memh5.MemDiskGroup)):
                 for item in n.values():
@@ -624,6 +620,7 @@ class ReturnLastInputOnFinish(SingleTask):
         Parameters
         ----------
         x : object
+            Object to cache
         """
         self.x = x
 
@@ -653,6 +650,7 @@ class ReturnFirstInputOnFinish(SingleTask):
         Parameters
         ----------
         x : object
+            Object to cache
         """
         if self.x is None:
             self.x = x
@@ -705,12 +703,10 @@ def group_tasks(*tasks):
     """
 
     class TaskGroup(*tasks):
-
         # TODO: figure out how to make the setup work at the moment it just picks the first in MRO
         # def setup(self, x): pass
 
         def process(self, x):
-
             for t in tasks:
                 self.log.debug("Calling process for subtask %s", t.__name__)
                 x = t.process(self, x)

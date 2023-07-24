@@ -1,4 +1,4 @@
-"""Sensitivity Analysis Tasks"""
+"""Sensitivity Analysis Tasks."""
 
 import numpy as np
 
@@ -28,6 +28,7 @@ class ComputeSystemSensitivity(task.SingleTask):
         Parameters
         ----------
         telescope : TransitTelescope
+            Telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
@@ -159,13 +160,11 @@ class ComputeSystemSensitivity(task.SingleTask):
 
         # Average over selected baseline per polarization
         for pp, ipol in enumerate(pol_index):
-
             pcnt = cnt[ipol, :]
             pscale = 2.0 - auto_flag[ipol, np.newaxis]
 
             # Loop over frequencies to reduce memory usage
             for ff in range(nfreq):
-
                 fslc = slice((ff % niff) * ntime, ((ff % niff) + 1) * ntime)
                 pfcnt = pcnt[:, index_cnt[fslc]]
 
@@ -196,9 +195,7 @@ class ComputeSystemSensitivity(task.SingleTask):
         radiometer_counter = np.zeros((nfreq, npol, ntime), dtype=np.float32)
 
         for ii, (ai, pi) in enumerate(zip(auto_input, auto_pol)):
-
             for jj, (aj, pj) in enumerate(zip(auto_input, auto_pol)):
-
                 if self.exclude_intracyl and (ew_position[ai] == ew_position[aj]):
                     # Exclude intracylinder baselines
                     continue
@@ -233,7 +230,6 @@ class ComputeSystemSensitivity(task.SingleTask):
         # Create output container
         metrics = containers.SystemSensitivity(
             pol=np.array(pol_uniq, dtype="<U2"),
-            time=data.time[:],
             axes_from=data,
             attrs_from=data,
             comm=data.comm,

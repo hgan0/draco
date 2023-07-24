@@ -29,6 +29,7 @@ def sumthreshold_py(
     remove_median : bool, optional
         Subtract the median of the full 2D dataset. Default is True.
     correct_for_missing : bool, optional
+        Correct for missing counts
 
     Returns
     -------
@@ -50,7 +51,6 @@ def sumthreshold_py(
 
     m = 1
     while m <= max_m:
-
         if m == 1:
             threshold = threshold1
         else:
@@ -183,7 +183,6 @@ def sir(basemask, eta=0.2, only_freq=False, only_time=False):
     newmask = basemask.astype(bool).copy()
 
     for pp in range(nprod):
-
         if not only_time:
             for tt in range(ntime):
                 newmask[:, pp, tt] |= sir1d(basemask[:, pp, tt], eta=eta)

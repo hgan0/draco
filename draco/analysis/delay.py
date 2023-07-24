@@ -62,6 +62,7 @@ class DelayFilter(task.SingleTask):
         Parameters
         ----------
         telescope : TransitTelescope
+            The telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
@@ -92,7 +93,6 @@ class DelayFilter(task.SingleTask):
         baselines = tel.feedpositions[ia] - tel.feedpositions[ib]
 
         for lbi, bi in ss.vis[:].enumerate(axis=1):
-
             # Select the baseline length to use
             baseline = baselines[bi]
             if self.telescope_orientation == "NS":
@@ -182,6 +182,7 @@ class DelayFilterBase(task.SingleTask):
         Parameters
         ----------
         telescope
+            The telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
@@ -217,7 +218,6 @@ class DelayFilterBase(task.SingleTask):
         ss_filt
             Filtered dataset.
         """
-
         if not isinstance(ss, containers.FreqContainer):
             raise TypeError(
                 f"Can only process FreqContainer instances. Got {type(ss)}."
@@ -277,7 +277,6 @@ class DelayFilterBase(task.SingleTask):
         )
 
         for lbi, bi in ss.datasets[dset][:].enumerate(axis=dist_axis_pos):
-
             # Extract the part of the array that we are processing, and
             # transpose/reshape to make a 2D array with frequency as axis=0
             vis_local = _take_view(ssv, lbi, dist_axis_pos)
@@ -385,6 +384,7 @@ class DelaySpectrumEstimator(task.SingleTask, random.RandomTask):
         Parameters
         ----------
         telescope : TransitTelescope
+            The telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
@@ -394,12 +394,13 @@ class DelaySpectrumEstimator(task.SingleTask, random.RandomTask):
         Parameters
         ----------
         ss : SiderealStream or TimeStream
+            Data container with visibilities to process
 
         Returns
         -------
         dspec : DelaySpectrum
+            Delay spectrum of the input container Stokes I
         """
-
         tel = self.telescope
 
         ss.redistribute("freq")
@@ -448,7 +449,6 @@ class DelaySpectrumEstimator(task.SingleTask, random.RandomTask):
 
         # Iterate over all baselines and use the Gibbs sampler to estimate the spectrum
         for lbi, bi in delay_spec.spectrum[:].enumerate(axis=0):
-
             self.log.debug("Delay transforming baseline %i/%i", bi, len(baselines))
 
             # Get the local selections
@@ -564,6 +564,7 @@ class DelaySpectrumEstimatorBase(task.SingleTask, random.RandomTask):
         Parameters
         ----------
         telescope : TransitTelescope
+            The telescope object to use
         """
         self.telescope = io.get_telescope(telescope)
 
@@ -680,7 +681,6 @@ class DelaySpectrumEstimatorBase(task.SingleTask, random.RandomTask):
 
         # Iterate over all baselines and use the Gibbs sampler to estimate the spectrum
         for lbi, bi in delay_spec.spectrum[:].enumerate(axis=0):
-
             self.log.debug(f"Delay transforming baseline {bi}/{nbase}")
 
             # Get the local selections
@@ -748,7 +748,6 @@ def stokes_I(sstream, tel):
     ubase : np.ndarray[nbase, 2]
         Baseline vectors corresponding to output.
     """
-
     # Construct a complex number representing each baseline (used for determining
     # unique baselines).
     # NOTE: due to floating point precision, some baselines don't get matched as having
@@ -772,7 +771,6 @@ def stokes_I(sstream, tel):
     # Cache beamclass as it's regenerated every call
     beamclass = tel.beamclass[:]
     for ii, ui in enumerate(uinv):
-
         # Skip if not all polarisations were included
         if ucount[ui] < 4:
             continue
@@ -810,7 +808,6 @@ def window_generalised(x, window="nuttall"):
     w : np.ndarray[n]
         Window function.
     """
-
     a_table = {
         "nuttall": np.array([0.355768, -0.487396, 0.144232, -0.012604]),
         "blackman_nuttall": np.array([0.3635819, -0.4891775, 0.1365995, -0.0106411]),
@@ -843,7 +840,6 @@ def fourier_matrix_r2c(N, fsel=None):
         An array performing the Fourier transform from a real time series to
         frequencies packed as alternating real and imaginary elements,
     """
-
     if fsel is None:
         fa = np.arange(N // 2 + 1)
     else:
@@ -877,7 +873,6 @@ def fourier_matrix_c2r(N, fsel=None):
         An array performing the Fourier transform from frequencies packed as
         alternating real and imaginary elements, to the real time series.
     """
-
     if fsel is None:
         fa = np.arange(N // 2 + 1)
     else:
@@ -917,7 +912,6 @@ def fourier_matrix_c2c(N, fsel=None):
         frequencies, with both input and output packed as alternating real and
         imaginary elements.
     """
-
     if fsel is None:
         fa = np.arange(N)
     else:
@@ -952,7 +946,6 @@ def _complex_to_alternating_real(array):
         expanded along the last axis, such that if `array` has `N` complex elements in
         its last axis, `out` will have `2N` real elements.
     """
-
     return array.astype(np.complex128, order="C").view(np.float64)
 
 
@@ -971,7 +964,6 @@ def _alternating_real_to_complex(array):
         `array` has `N` real elements in the last axis, `out` will have `N/2` complex
         elements).
     """
-
     return array.astype(np.float64, order="C").view(np.complex128)
 
 
@@ -1023,7 +1015,6 @@ def delay_spectrum_gibbs(
     spec : list
         List of spectrum samples.
     """
-
     # Get reference to RNG
     if rng is None:
         rng = random.default_rng()
@@ -1047,7 +1038,6 @@ def delay_spectrum_gibbs(
 
     # Window the frequency data
     if window is not None:
-
         # Construct the window function
         x = fsel * 1.0 / total_freq
         w = window_generalised(x, window=window)
@@ -1173,7 +1163,6 @@ def delay_spectrum_gibbs(
     # Perform the Gibbs sampling iteration for a given number of loops and
     # return the power spectrum output of them.
     for ii in range(niter):
-
         d_samp = _draw_signal_sample(S_samp)
         S_samp = _draw_ps_sample(d_samp)
 
@@ -1205,7 +1194,6 @@ def null_delay_filter(freq, max_delay, mask, num_delay=200, tol=1e-8, window=Tru
     filter : np.ndarray[freq, freq]
         The filter as a 2D matrix.
     """
-
     # Construct the window function
     x = (freq - freq.min()) / freq.ptp()
     w = window_generalised(x, window="nuttall")
@@ -1262,7 +1250,6 @@ def match_axes(dset1, dset2):
         A view of dset2 with length-1 axes inserted to match the axes missing from
         dset1.
     """
-
     axes1 = dset1.attrs["axis"]
     axes2 = dset2.attrs["axis"]
     bcast_slice = tuple(slice(None) if ax in axes2 else np.newaxis for ax in axes1)

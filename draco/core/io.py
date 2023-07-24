@@ -24,7 +24,8 @@ Several tasks accept groups of files as arguments. These are specified in the YA
 """
 import os.path
 import shutil
-from typing import Union, Dict, List
+import subprocess
+from typing import Union, Dict, List, Optional
 
 import numpy as np
 from yaml import dump as yamldump
@@ -40,7 +41,7 @@ from ..util.exception import ConfigError
 
 
 def _list_of_filelists(files: Union[List[str], List[List[str]]]) -> List[List[str]]:
-    """Take in a list of lists/glob patterns of filenames
+    """Take in a list of lists/glob patterns of filenames.
 
     Parameters
     ----------
@@ -63,7 +64,6 @@ def _list_of_filelists(files: Union[List[str], List[List[str]]]) -> List[List[st
     f2 = []
 
     for filelist in files:
-
         if isinstance(filelist, str):
             if "*" not in filelist and not os.path.isfile(filelist):
                 raise ConfigError("File not found: %s" % filelist)
@@ -79,7 +79,7 @@ def _list_of_filelists(files: Union[List[str], List[List[str]]]) -> List[List[st
 
 
 def _list_or_glob(files: Union[str, List[str]]) -> List[str]:
-    """Take in a list of lists/glob patterns of filenames
+    """Take in a list of lists/glob patterns of filenames.
 
     Parameters
     ----------
@@ -110,7 +110,6 @@ def _list_or_glob(files: Union[str, List[str]]) -> List[str]:
 
     # We presume a string is an actual path...
     if isinstance(files, str):
-
         # Check that it exists and is a file (or dir if zarr format)
         if files.endswith(".zarr"):
             if not os.path.isdir(files):
@@ -129,7 +128,7 @@ def _list_or_glob(files: Union[str, List[str]]) -> List[str]:
 
 
 def _list_of_filegroups(groups: Union[List[Dict], Dict]) -> List[Dict]:
-    """Process a file group/groups
+    """Process a file group/groups.
 
     Parameters
     ----------
@@ -156,7 +155,6 @@ def _list_of_filegroups(groups: Union[List[Dict], Dict]) -> List[Dict]:
     # Iterate over groups, set the tag if needed, and process the file list
     # through glob
     for gi, group in enumerate(groups):
-
         try:
             files = group["files"]
         except KeyError:
@@ -206,7 +204,6 @@ class LoadMaps(task.MPILoggedTask):
         -------
         map : :class:`containers.Map`
         """
-
         from . import containers
 
         # Exit this task if we have eaten all the file groups
@@ -220,7 +217,6 @@ class LoadMaps(task.MPILoggedTask):
         # Iterate over all the files in the group, load them into a Map
         # container and add them all together
         for mfile in group["files"]:
-
             self.log.debug("Loading file %s", mfile)
 
             current_map = containers.Map.from_file(mfile, distributed=True)
@@ -233,7 +229,6 @@ class LoadMaps(task.MPILoggedTask):
             # Otherwise, check that the new map has consistent frequencies,
             # nside and pol and stack up.
             else:
-
                 if (current_map.freq != map_stack.freq).all():
                     raise RuntimeError("Maps do not have consistent frequencies.")
 
@@ -282,7 +277,6 @@ class LoadFITSCatalog(task.SingleTask):
         -------
         catalog : :class:`containers.SpectroscopicCatalog`
         """
-
         from astropy.io import fits
         from . import containers
 
@@ -308,7 +302,6 @@ class LoadFITSCatalog(task.SingleTask):
             # container and add them all together
             catalog_stack = []
             for cfile in group["files"]:
-
                 self.log.debug("Loading file %s", cfile)
 
                 # TODO: read out the weights from the catalogs
@@ -353,22 +346,13 @@ class LoadFITSCatalog(task.SingleTask):
         return catalog
 
 
-class BaseLoadFiles(task.SingleTask):
-    """Base class for loading containers from a file on disk.
-
-    Provides the capability to make selections along axes.
+class SelectionsMixin:
+    """Mixin for parsing axis selections, typically from a yaml config.
 
     Attributes
     ----------
-    distributed : bool, optional
-        Whether the file should be loaded distributed across ranks.
-    convert_strings : bool, optional
-        Convert strings to unicode when loading.
     selections : dict, optional
-        A dictionary of axis selections. See the section below for details.
-    redistribute : str, optional
-        An optional axis name to redistribute the container over after it has
-        been read.
+        A dictionary of axis selections. See below for details.
 
     Selections
     ----------
@@ -394,52 +378,11 @@ class BaseLoadFiles(task.SingleTask):
             stack_range: [1, 14]  # Will override the selection above
     """
 
-    distributed = config.Property(proptype=bool, default=True)
-    convert_strings = config.Property(proptype=bool, default=True)
     selections = config.Property(proptype=dict, default=None)
-    redistribute = config.Property(proptype=str, default=None)
 
     def setup(self):
         """Resolve the selections."""
         self._sel = self._resolve_sel()
-
-    def _load_file(self, filename, extra_message=""):
-        # Load the file into the relevant container
-
-        if not os.path.exists(filename):
-            raise RuntimeError(f"File does not exist: {filename}")
-
-        self.log.info(f"Loading file {filename} {extra_message}")
-        self.log.debug(f"Reading with selections: {self._sel}")
-
-        # If we are applying selections we need to dispatch the `from_file` via the
-        # correct subclass, rather than relying on the internal detection of the
-        # subclass. To minimise the number of files being opened this is only done on
-        # rank=0 and is then broadcast
-        if self._sel:
-            if self.comm.rank == 0:
-                with fileformats.guess_file_format(filename).open(filename, "r") as fh:
-                    clspath = memh5.MemDiskGroup._detect_subclass_path(fh)
-            else:
-                clspath = None
-            clspath = self.comm.bcast(clspath, root=0)
-            new_cls = memh5.MemDiskGroup._resolve_subclass(clspath)
-        else:
-            new_cls = memh5.BasicCont
-
-        cont = new_cls.from_file(
-            filename,
-            distributed=self.distributed,
-            comm=self.comm,
-            convert_attribute_strings=self.convert_strings,
-            convert_dataset_strings=self.convert_strings,
-            **self._sel,
-        )
-
-        if self.redistribute is not None:
-            cont.redistribute(self.redistribute)
-
-        return cont
 
     def _resolve_sel(self):
         # Turn the selection parameters into actual selectable types
@@ -451,7 +394,6 @@ class BaseLoadFiles(task.SingleTask):
         # To enforce the precedence of range vs index selections, we rely on the fact
         # that a sort will place the axis_range keys after axis_index keys
         for k in sorted(self.selections or []):
-
             # Parse the key to get the axis name and type, accounting for the fact the
             # axis name may contain an underscore
             *axis, type_ = k.split("_")
@@ -491,6 +433,65 @@ class BaseLoadFiles(task.SingleTask):
                 raise ValueError(f"All elements of index spec must be ints. Got {x}")
 
         return list(x)
+
+
+class BaseLoadFiles(SelectionsMixin, task.SingleTask):
+    """Base class for loading containers from a file on disk.
+
+    Provides the capability to make selections along axes.
+
+    Attributes
+    ----------
+    distributed : bool, optional
+        Whether the file should be loaded distributed across ranks.
+    convert_strings : bool, optional
+        Convert strings to unicode when loading.
+    redistribute : str, optional
+        An optional axis name to redistribute the container over after it has
+        been read.
+    """
+
+    distributed = config.Property(proptype=bool, default=True)
+    convert_strings = config.Property(proptype=bool, default=True)
+    redistribute = config.Property(proptype=str, default=None)
+
+    def _load_file(self, filename, extra_message=""):
+        # Load the file into the relevant container
+
+        if not os.path.exists(filename):
+            raise RuntimeError(f"File does not exist: {filename}")
+
+        self.log.info(f"Loading file {filename} {extra_message}")
+        self.log.debug(f"Reading with selections: {self._sel}")
+
+        # If we are applying selections we need to dispatch the `from_file` via the
+        # correct subclass, rather than relying on the internal detection of the
+        # subclass. To minimise the number of files being opened this is only done on
+        # rank=0 and is then broadcast
+        if self._sel:
+            if self.comm.rank == 0:
+                with fileformats.guess_file_format(filename).open(filename, "r") as fh:
+                    clspath = memh5.MemDiskGroup._detect_subclass_path(fh)
+            else:
+                clspath = None
+            clspath = self.comm.bcast(clspath, root=0)
+            new_cls = memh5.MemDiskGroup._resolve_subclass(clspath)
+        else:
+            new_cls = memh5.BasicCont
+
+        cont = new_cls.from_file(
+            filename,
+            distributed=self.distributed,
+            comm=self.comm,
+            convert_attribute_strings=self.convert_strings,
+            convert_dataset_strings=self.convert_strings,
+            **self._sel,
+        )
+
+        if self.redistribute is not None:
+            cont.redistribute(self.redistribute)
+
+        return cont
 
 
 class LoadFilesFromParams(BaseLoadFiles):
@@ -546,8 +547,9 @@ LoadBasicCont = LoadFilesFromParams
 
 
 class FindFiles(pipeline.TaskBase):
-    """Take a glob or list of files specified as a parameter in the
-    configuration file and pass on to other tasks.
+    """Take a glob or list of files and pass on to other tasks.
+
+    Files are specified as a parameter in the configuration file.
 
     Parameters
     ----------
@@ -578,8 +580,8 @@ class LoadFiles(LoadFilesFromParams):
         Parameters
         ----------
         files : list
+            Files to load
         """
-
         # Call the baseclass setup to resolve any selections
         super().setup()
 
@@ -615,7 +617,6 @@ class Save(pipeline.TaskBase):
         data : mpidataset.MPIDataset
             Data to write out.
         """
-
         if "tag" not in data.attrs:
             tag = self.count
             self.count += 1
@@ -633,7 +634,7 @@ class Print(pipeline.TaskBase):
     """Stupid module which just prints whatever it gets. Good for debugging."""
 
     def next(self, input_):
-
+        """Print the input."""
         print(input_)
 
         return input_
@@ -662,7 +663,6 @@ class LoadBeamTransfer(pipeline.TaskBase):
         feed_info : list, optional
             Optional list providing additional information about each feed.
         """
-
         import os
 
         from drift.core import beamtransfer
@@ -700,7 +700,6 @@ class LoadProductManager(pipeline.TaskBase):
         manager : ProductManager
             Object describing the telescope.
         """
-
         import os
 
         from drift.core import manager
@@ -748,8 +747,7 @@ class Truncate(task.SingleTask):
     }
 
     def _get_params(self, container, dset):
-        """
-        Load truncation parameters for a dataset from config or container defaults.
+        """Load truncation parameters for a dataset from config or container defaults.
 
         Parameters
         ----------
@@ -811,10 +809,9 @@ class Truncate(task.SingleTask):
         `caput.pipeline.PipelineRuntimeError`
             If input data has mismatching dataset and weight array shapes.
         `config.CaputConfigError`
-             If the input data container has no preset values and `fixed_precision` or `variance_increase` are not set
-             in the config.
+             If the input data container has no preset values and `fixed_precision` or
+             `variance_increase` are not set in the config.
         """
-
         if self.ensure_chunked:
             data._ensure_chunked()
 
@@ -945,15 +942,11 @@ class ZipZarrContainers(task.SingleTask):
 
         Only the lowest rank on each node will participate.
         """
-
         if self._host_rank is not None:
-            import subprocess
-
             # Get the set of containers this rank is responsible for compressing
             my_containers = self.containers[self._host_rank :: self._num_hosts]
 
             for container in my_containers:
-
                 self.log.info(f"Zipping {container}")
 
                 if not container.endswith(".zarr") or not os.path.isdir(container):
@@ -982,6 +975,125 @@ class ZipZarrContainers(task.SingleTask):
         raise pipeline.PipelineStopIteration
 
 
+class ZarrZipHandle:
+    """A handle for keeping track of background Zarr-zipping job."""
+
+    def __init__(self, filename: str, handle: Optional[subprocess.Popen]):
+        self.filename = filename
+        self.handle = handle
+
+
+class SaveZarrZip(ZipZarrContainers):
+    """Save a container as a .zarr.zip file.
+
+    This task saves the output first as a .zarr container, and then starts a background
+    job to start turning it into a zip file. It returns a handle to this job. All these
+    handles should be fed into a `WaitZarrZip` task to ensure the pipeline run does not
+    terminate before they are complete.
+
+    This accepts most parameters that a standard task would for saving, including
+    compression parameter overrides.
+    """
+
+    # This keeps track of the global number of operations run such that we can dispatch
+    # the background jobs to different ranks
+    _operation_counter = 0
+
+    def setup(self):
+        """Check the parameters and determine the ranks to use."""
+        if not self.output_name.endswith(".zarr.zip"):
+            raise ConfigError("File output name must end in `.zarr.zip`.")
+
+        # Trim off the .zip suffix and fix the file format
+        self.output_name = self.output_name[:-4]
+        self.output_format = fileformats.Zarr
+        self.save = True
+
+        # Call the baseclass to determine which ranks will do the work
+        super().setup()
+
+    # Override next as we don't want the usual mechanism
+    def next(self, container: memh5.BasicCont) -> ZarrZipHandle:
+        """Take a container and save it out as a .zarr.zip file.
+
+        Parameters
+        ----------
+        container
+            Container to save out.
+
+        Returns
+        -------
+        handle
+            A handle to use to determine if the job has successfully completed. This
+            should be given to the `WaitZarrZip` task.
+        """
+        outfile = self._save_output(container)
+        dest_file = outfile + ".zip"
+        self.comm.Barrier()
+
+        bg_process = None
+
+        host_rank_to_use = self._operation_counter % self._num_hosts
+
+        if self._host_rank == host_rank_to_use:
+            self.log.info(f"Starting background job to zip {outfile}")
+
+            # Run 7z to zip up the file
+            dest_file = outfile + ".zip"
+            src_dir = outfile + "/."
+            command = f"{self._path_7z} a -tzip -mx=0 {dest_file} {src_dir}"
+
+            # If we are to remove the file get the background job to do it immediately
+            # after zipping succeeds
+            if self.remove:
+                command += f" && rm -r {outfile}"
+
+            bg_process = subprocess.Popen(
+                command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+
+        # Increment the global operations counter
+        self.__class__._operation_counter += 1
+
+        return ZarrZipHandle(dest_file, bg_process)
+
+
+class WaitZarrZip(task.MPILoggedTask):
+    """Collect Zarr-zipping jobs and wait for them to complete."""
+
+    _handles: Optional[List[ZarrZipHandle]] = None
+
+    def next(self, handle: ZarrZipHandle):
+        """Receive the handles to wait on.
+
+        Parameters
+        ----------
+        handle
+            The handle to wait on.
+        """
+        if self._handles is None:
+            self._handles = []
+
+        self._handles.append(handle)
+
+    def finish(self):
+        """Wait for all Zarr zipping jobs to complete."""
+        for h in self._handles:
+            self.log.debug(f"Waiting on job processing {h.filename}")
+
+            if h.handle is not None:
+                returncode = h.handle.wait()
+
+                if returncode != 0 or not os.path.exists(h.filename):
+                    self.log.debug("Error occurred while zipping. Debug logs follow...")
+                    self.log.debug(f"stdout={h.handle.stdout}")
+                    self.log.debug(f"stderr={h.handle.stderr}")
+                    raise RuntimeError(f"Error occurred while zipping {h.filename}.")
+
+            self.comm.Barrier()
+            self.log.info(f"Processing job for {h.filename} successful.")
+
+
 class SaveModuleVersions(task.SingleTask):
     """Write module versions to a YAML file.
 
@@ -1000,7 +1112,6 @@ class SaveModuleVersions(task.SingleTask):
 
     def setup(self):
         """Save module versions."""
-
         fname = "{}_versions.yml".format(self.root)
         f = open(fname, "w")
         f.write(yamldump(self.versions))
@@ -1029,7 +1140,6 @@ class SaveConfig(task.SingleTask):
 
     def setup(self):
         """Save module versions."""
-
         fname = "{}_config.yml".format(self.root)
         f = open(fname, "w")
         f.write(yamldump(self.pipeline_config))
@@ -1048,8 +1158,9 @@ TelescopeConvertible = Union[BeamTransferConvertible, telescope.TransitTelescope
 
 
 def get_telescope(obj):
-    """Return a telescope object out of the input (either `ProductManager`,
-    `BeamTransfer` or `TransitTelescope`).
+    """Return a telescope object out of the input.
+
+    Either `ProductManager`, `BeamTransfer`, or `TransitTelescope`.
     """
     try:
         return get_beamtransfer(obj).telescope
@@ -1061,8 +1172,9 @@ def get_telescope(obj):
 
 
 def get_beamtransfer(obj):
-    """Return a BeamTransfer object out of the input (either `ProductManager`,
-    `BeamTransfer`).
+    """Return a BeamTransfer object out of the input.
+
+    Either `ProductManager` or `BeamTransfer`.
     """
     if isinstance(obj, beamtransfer.BeamTransfer):
         return obj

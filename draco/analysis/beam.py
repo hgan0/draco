@@ -1,7 +1,4 @@
-"""
-======================================================
-Beam model related tasks (:mod:`~draco.analysis.beam`)
-======================================================
+"""Beam model related tasks (:mod:`~draco.analysis.beam`).
 
 .. currentmodule:: draco.analysis.beam
 
@@ -178,14 +175,12 @@ class CreateBeamStreamFromTelescope(CreateBeamStream):
         out : containers.HybridVisStream
             Effective beam transfer function.
         """
-
         beam = self._evaluate_beam(data)
 
         return super().process(data, beam)
 
     def _evaluate_beam(self, data):
         """Evaluate the beam model at the coordinates in the data container."""
-
         # Create the beam container
         inputs = np.array(["common-mode"])
         ha = (data.ra + 180.0) % 360.0 - 180.0
@@ -248,13 +243,11 @@ class CreateBeamStreamFromTelescope(CreateBeamStream):
         # Loop over local frequencies and polarisations and evaluate the beam
         # by calling the telescopes beam method.
         for ff, freq in enumerate(local_freq_index):
-
             if not local_freq_flag[ff]:
                 weight[ff] = 0.0
                 continue
 
             for pp, pol in enumerate(pol_pairs):
-
                 bii = self.telescope.beam(map_pol_to_feed[pol[0]], freq, angpos)
 
                 if pol[0] != pol[1]:

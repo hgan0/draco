@@ -31,7 +31,6 @@ class SVDSpectrumEstimator(task.SingleTask):
         -------
         spectrum : containers.SVDSpectrum
         """
-
         mmodes.redistribute("m")
 
         vis = mmodes.vis[:]
@@ -83,12 +82,12 @@ class SVDFilter(task.SingleTask):
         Parameters
         ----------
         mmodes : container.MModes
+            MModes to process
 
         Returns
         -------
         mmodes : container.MModes
         """
-
         from mpi4py import MPI
 
         mmodes.redistribute("m")
@@ -103,7 +102,6 @@ class SVDFilter(task.SingleTask):
 
         # Do a quick first pass calculation of all the singular values to get the max on this rank.
         for mi, m in vis.enumerate(axis=0):
-
             vis_m = vis.local_array[mi].transpose((1, 0, 2)).reshape(vis.shape[2], -1)
             weight_m = (
                 weight.local_array[mi].transpose((1, 0, 2)).reshape(vis.shape[2], -1)
@@ -124,7 +122,6 @@ class SVDFilter(task.SingleTask):
 
         # Loop over all m's and remove modes below the combined cut
         for mi, m in vis.enumerate(axis=0):
-
             vis_m = vis.local_array[mi].transpose((1, 0, 2)).reshape(vis.shape[2], -1)
             weight_m = (
                 weight.local_array[mi].transpose((1, 0, 2)).reshape(vis.shape[2], -1)
@@ -174,7 +171,6 @@ def svd_em(A, mask, niter=5, rank=5, full_matrices=False):
     u, sig, vh : np.ndarray
         The singular values and vectors.
     """
-
     # Do an initial fill of the missing entries
     A = A.copy()
     A[mask] = np.median(A[~mask])
@@ -183,7 +179,6 @@ def svd_em(A, mask, niter=5, rank=5, full_matrices=False):
     # missing values, then forming a new estimate of the missing values using a
     # low rank approximation.
     for i in range(niter):
-
         u, sig, vh = la.svd(A, full_matrices=full_matrices, overwrite_a=False)
 
         low_rank_A = np.dot(u[:, :rank] * sig[:rank], vh[:rank])
