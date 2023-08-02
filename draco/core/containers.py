@@ -2466,7 +2466,18 @@ class DelayCutoff(ContainerBase):
 
 
 class DelaySpectrum(ContainerBase):
-    """Container for a delay power spectrum."""
+    """Container for a delay power spectrum.
+
+    Notes
+    -----
+    A note about definitions: for a dataset with a frequency axis, the corresponding
+    delay spectrum is the result of Fourier transforming in frequency, while the delay
+    power spectrum is obtained by taking the squared magnitude of each element of the
+    delay spectrum, and then usually averaging over some other axis. Our unfortunate
+    convention is to store a delay power spectrum in a `DelaySpectrum` container, and
+    store a delay spectrum in a :py:class:`~draco.core.containers.DelayTransform`
+    container.
+    """
 
     _axes = ("baseline", "delay")
 
@@ -2480,9 +2491,72 @@ class DelaySpectrum(ContainerBase):
         }
     }
 
+    def __init__(self, weight_boost=1.0, *args, **kwargs):
+        super(DelaySpectrum, self).__init__(*args, **kwargs)
+        self.attrs["weight_boost"] = weight_boost
+
     @property
     def spectrum(self):
         return self.datasets["spectrum"]
+
+    @property
+    def weight_boost(self):
+        """Get the weight boost factor.
+
+        If set, this factor was used to set the assumed noise when computing the
+        spectrum.
+        """
+        return self.attrs["weight_boost"]
+
+    @property
+    def freq(self):
+        """Get the frequency axis of the input data."""
+        return self.attrs["freq"]
+
+
+class DelayTransform(ContainerBase):
+    """Container for a delay spectrum.
+
+    Notes
+    -----
+    See the docstring for :py:class:`~draco.core.containers.DelaySpectrum` for a
+    description of the difference between `DelayTransform` and `DelaySpectrum`.
+    """
+
+    _axes = ("baseline", "sample", "delay")
+
+    _dataset_spec = {
+        "spectrum": {
+            "axes": ["baseline", "sample", "delay"],
+            "dtype": np.complex128,
+            "initialise": True,
+            "distributed": True,
+            "distributed_axis": "baseline",
+        }
+    }
+
+    def __init__(self, weight_boost=1.0, *args, **kwargs):
+        super(DelayTransform, self).__init__(*args, **kwargs)
+        self.attrs["weight_boost"] = weight_boost
+
+    @property
+    def spectrum(self):
+        """Get the spectrum dataset."""
+        return self.datasets["spectrum"]
+
+    @property
+    def weight_boost(self):
+        """Get the weight boost factor.
+
+        If set, this factor was used to set the assumed noise when computing the
+        spectrum.
+        """
+        return self.attrs["weight_boost"]
+
+    @property
+    def freq(self):
+        """Get the frequency axis of the input data."""
+        return self.attrs["freq"]
 
 
 class Powerspectrum2D(ContainerBase):
