@@ -81,7 +81,7 @@ class ExtractFocalExpansion(task.SingleTask):
             )
             gx_dirty[..., 1] = (
                 #(ssiw[fslice] * ssiv[fslice]).reshape(newshape).sum(axis=ra_axis)
-                (ssiw[fslice] * ssiv[fslice] * np.gradient(sssv[fslice]* ns_matrix, axis=ns_axis)).reshape(newshape).sum(axis=ra_axis)
+                (ssiw[fslice] * ssiv[fslice] * np.gradient(sssv[fslice]* ns_matrix, axis=ns_axis) * dy).reshape(newshape).sum(axis=ra_axis)
             )
 
             # Construct the inverse covariance
@@ -93,10 +93,10 @@ class ExtractFocalExpansion(task.SingleTask):
             )
             mNi[..., 0, 1] = (
                 #(sssv[fslice].conj() * ssiw[fslice]).reshape(newshape).sum(axis=ra_axis)
-                 (sssv[fslice].conj() * ssiw[fslice] * np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis)).reshape(newshape).sum(axis=ra_axis)
+                 (sssv[fslice].conj() * ssiw[fslice] * np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis) * dy).reshape(newshape).sum(axis=ra_axis)
             )
             #mNi[..., 1, 1] = ssiw[fslice].reshape(newshape).sum(axis=ra_axis)
-            mNi[..., 1, 1] = (np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis) ** 2 * ssiw[fslice] ).reshape(newshape).sum(axis=ra_axis)
+            mNi[..., 1, 1] = ( (np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis) * dy) ** 2 * ssiw[fslice] ).reshape(newshape).sum(axis=ra_axis)
             #
             ## * baseline
             
@@ -189,6 +189,8 @@ class ExtractFocalCrosstalkGain(task.SingleTask):
         #ns_matrix = ns_baseline[np.newaxis, np.newaxis, :, np.newaxis]
         ns_axis = -2
         ra_axis = -1 
+        dy = 0.3048 # the spacing of the feeds along the focal line 
+         
         #print(ss.axes, ss.vis.shape)
         #print(ns_baseline)
         
@@ -210,7 +212,7 @@ class ExtractFocalCrosstalkGain(task.SingleTask):
                 .sum(axis=ra_axis)
             )
             gx_dirty[..., 1] = (
-                (np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis).conj() * ssiw[fslice] * ssiv[fslice])
+                (np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis).conj() * dy * ssiw[fslice] * ssiv[fslice])
                 .reshape(newshape)
                 .sum(axis=ra_axis)
             )            
@@ -229,7 +231,7 @@ class ExtractFocalCrosstalkGain(task.SingleTask):
             )
             mNi[..., 0, 1] = (
             #     (np.zeros_like(sssv[fslice])).reshape(newshape).sum(axis=ra_axis)
-                (sssv[fslice].conj() * np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis) * ssiw[fslice] ).reshape(newshape).sum(axis=ra_axis)
+                (sssv[fslice].conj() * np.gradient(sssv[fslice]* ns_matrix , axis=ns_axis) * dy * ssiw[fslice] ).reshape(newshape).sum(axis=ra_axis)
             )
             mNi[..., 0, 2] = (
                 (sssv[fslice].conj() * ssiw[fslice]).reshape(newshape).sum(axis=ra_axis)
@@ -238,11 +240,11 @@ class ExtractFocalCrosstalkGain(task.SingleTask):
             mNi[..., 1, 0] = mNi[..., 0, 1].conj()
             mNi[..., 2, 0] = mNi[..., 0, 2].conj()
             
-            mNi[..., 1, 1] = (np.abs(np.gradient(sssv[fslice]* ns_matrix, axis=ns_axis)) ** 2 * ssiw[fslice]).reshape(newshape).sum(axis=ra_axis)            
+            mNi[..., 1, 1] = (np.abs(np.gradient(sssv[fslice]* ns_matrix, axis=ns_axis) * dy) ** 2 * ssiw[fslice]).reshape(newshape).sum(axis=ra_axis)            
 
             mNi[..., 1, 2] = (
             #     (np.zeros_like(sssv[fslice])).reshape(newshape).sum(axis=ra_axis)
-                 (np.gradient(sssv[fslice]* ns_matrix, axis=ns_axis).conj() * ssiw[fslice]).reshape(newshape).sum(axis=ra_axis)
+                 (np.gradient(sssv[fslice]* ns_matrix, axis=ns_axis).conj() * dy * ssiw[fslice]).reshape(newshape).sum(axis=ra_axis)
             )
             mNi[..., 2, 1] = mNi[..., 1, 2].conj()
             
