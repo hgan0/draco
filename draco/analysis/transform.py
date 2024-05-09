@@ -2,16 +2,17 @@
 
 This includes grouping frequencies and products to performing the m-mode transform.
 """
-from typing import Optional, Union, Tuple, overload
+
+from typing import Optional, Tuple, Union, overload
 
 import numpy as np
-from numpy.lib.recfunctions import structured_to_unstructured
-from caput import mpiarray, config
+import scipy.linalg as la
+from caput import config, mpiarray
 from caput.tools import invert_no_zero
+from numpy.lib.recfunctions import structured_to_unstructured
 
-from ..core import containers, task, io
-from ..util import tools
-from ..util import regrid
+from ..core import containers, io, task
+from ..util import regrid, tools
 
 
 class FrequencyRebin(task.SingleTask):
@@ -119,16 +120,18 @@ class CollateProducts(task.SingleTask):
             Telescope object to use
         """
         if self.weight not in ["natural", "uniform", "inverse_variance"]:
-            KeyError("Do not recognize weight = %s" % self.weight)
+            KeyError(f"Do not recognize weight = {self.weight!s}")
 
         self.telescope = io.get_telescope(tel)
 
         # Precalculate the stack properties
         self.bt_stack = np.array(
             [
-                (tools.cmap(upp[0], upp[1], self.telescope.nfeed), 0)
-                if upp[0] <= upp[1]
-                else (tools.cmap(upp[1], upp[0], self.telescope.nfeed), 1)
+                (
+                    (tools.cmap(upp[0], upp[1], self.telescope.nfeed), 0)
+                    if upp[0] <= upp[1]
+                    else (tools.cmap(upp[1], upp[0], self.telescope.nfeed), 1)
+                )
                 for upp in self.telescope.uniquepairs
             ],
             dtype=[("prod", "<u4"), ("conjugate", "u1")],
@@ -153,12 +156,10 @@ class CollateProducts(task.SingleTask):
         self.bt_rev["conjugate"] = np.where(feedmask, self.telescope.feedconj[triu], 0)
 
     @overload
-    def process(self, ss: containers.SiderealStream) -> containers.SiderealStream:
-        ...
+    def process(self, ss: containers.SiderealStream) -> containers.SiderealStream: ...
 
     @overload
-    def process(self, ss: containers.TimeStream) -> containers.TimeStream:
-        ...
+    def process(self, ss: containers.TimeStream) -> containers.TimeStream: ...
 
     def process(self, ss):
         """Select and reorder the products.
@@ -366,12 +367,10 @@ class SelectFreq(task.SingleTask):
         # Construct the frequency channel selection
         if self.freq_physical:
             newindex = sorted(
-                set(
-                    [
-                        np.argmin(np.abs(freq_map["centre"] - freq))
-                        for freq in self.freq_physical
-                    ]
-                )
+                {
+                    np.argmin(np.abs(freq_map["centre"] - freq))
+                    for freq in self.freq_physical
+                }
             )
 
         elif self.channel_range and (len(self.channel_range) <= 3):
@@ -685,9 +684,7 @@ class SiderealMModeResample(task.group_tasks(MModeTransform, MModeInverseTransfo
 def _make_ssarray(mmodes, n=None):
     # Construct an array of sidereal time streams from m-modes
     marray = _unpack_marray(mmodes, n=n)
-    ssarray = np.fft.ifft(marray * marray.shape[-1], axis=-1)
-
-    return ssarray
+    return np.fft.ifft(marray * marray.shape[-1], axis=-1)
 
 
 def _unpack_marray(mmodes, n=None):
@@ -709,7 +706,7 @@ def _unpack_marray(mmodes, n=None):
         mmax_minus = np.amin(((ntimes - 1) // 2, mmax_minus))
 
     # Create array to contain mmodes
-    marray = np.zeros(shape + (ntimes,), dtype=np.complex128)
+    marray = np.zeros((*shape, ntimes), dtype=np.complex128)
     # Add the DC bin
     marray[..., 0] = mmodes[0, 0]
     # Add all m-modes up to mmax_minus
@@ -981,15 +978,20 @@ class SelectPol(task.SingleTask):
         YY_ind = list(polcont.index_map["pol"]).index("YY")
 
         for name, dset in polcont.datasets.items():
+            out_dset = outcont.datasets[name]
             if "pol" not in dset.attrs["axis"]:
-                outcont.datasets[name][:] = dset[:]
+                out_dset[:] = dset[:]
             else:
                 pol_axis_pos = list(dset.attrs["axis"]).index("pol")
 
                 sl = tuple([slice(None)] * pol_axis_pos)
-                outcont.datasets[name][sl + (0,)] = dset[sl + (XX_ind,)]
-                outcont.datasets[name][sl + (0,)] += dset[sl + (YY_ind,)]
-                outcont.datasets[name][:] *= 0.5
+                out_dset[(*sl, 0)] = dset[(*sl, XX_ind)]
+                out_dset[(*sl, 0)] += dset[(*sl, YY_ind)]
+
+                if np.issubdtype(out_dset.dtype, np.integer):
+                    out_dset[:] //= 2
+                else:
+                    out_dset[:] *= 0.5
 
         return outcont
 
@@ -1196,8 +1198,11 @@ class MixData(task.SingleTask):
             # Helpful routine to get the data dset depending on the type
             if isinstance(data, containers.SiderealStream):
                 return data.vis
-            elif isinstance(data, containers.RingMap):
+
+            if isinstance(data, containers.RingMap):
                 return data.map
+
+            return None
 
         if self._data_ind >= len(self.data_coeff):
             raise RuntimeError(
@@ -1468,3 +1473,113 @@ class ReduceVar(ReduceBase):
         v = np.sum(weight * (arr - mu) ** 2, axis=axis, keepdims=True) * ws
 
         return v, np.ones_like(v)
+
+
+class HPFTimeStream(task.SingleTask):
+    """High pass filter a timestream.
+
+    This is done by solving for a low-pass filtered version of the timestream and then
+    subtracting it from the original.
+
+    Parameters
+    ----------
+    tau
+        Timescale in seconds to filter out fluctuations below.
+    pad
+        Implicitly pad the timestream with this many multiples of tau worth of zeros.
+        This is used to mitigate edge effects. The default is 2.
+    window
+        Use a Blackman window when determining the low-pass filtered timestream. When
+        applied this approximately doubles the length of the timescale, which is only
+        crudely corrected for.
+    prior
+        This should be approximately the size of the large scale fluctuations that we
+        will use as a regulariser.
+    """
+
+    tau = config.Property(proptype=float)
+    pad = config.Property(proptype=float, default=2)
+    window = config.Property(proptype=bool, default=True)
+
+    prior = config.Property(proptype=float, default=1e2)
+
+    def process(self, tstream: containers.TODContainer) -> containers.TODContainer:
+        """High pass filter a time stream.
+
+        Parameters
+        ----------
+        tstream
+            A TOD container that also implements DataWeightContainer.
+
+        Returns
+        -------
+        filtered_tstream
+            The high-pass filtered time stream.
+        """
+        if not isinstance(tstream, containers.DataWeightContainer):
+            # NOTE: no python intersection type so need to do this for now
+            raise TypeError("Need a DataWeightContainers")
+
+        if "time" != tstream.data.attrs["axis"][-1]:
+            raise TypeError("'time' is not the last axis of the dataset.")
+
+        if tstream.data.shape != tstream.weight.shape:
+            raise ValueError("Data and weights must have the same shape.")
+
+        # Distribute over the first axis
+        tstream.redistribute(tstream.data.attrs["axis"][0])
+
+        tau = 2 * self.tau if self.window else self.tau
+
+        dt = np.diff(tstream.time)
+        if not np.allclose(dt, dt[0], atol=1e-4):
+            self.log.warn(
+                "Samples are not regularly spaced. This might not work super well."
+            )
+
+        total_T = tstream.time[-1] - tstream.time[0] + 2 * tau
+
+        # Calculate the nearest integer multiple of modes based on the total length and
+        # the timescale
+        nmodes = int(np.ceil(total_T / tau))
+
+        # Calculate the conjugate fourier frequencies to use, we don't need to be in the
+        # canonical order as we're going to calculate this exactly via matrices
+        t_freq = np.arange(-nmodes, nmodes) / total_T
+
+        F = np.exp(2.0j * np.pi * tstream.time[:, np.newaxis] * t_freq[np.newaxis, :])
+
+        if self.window:
+            F *= np.blackman(2 * nmodes)[np.newaxis, :]
+
+        Fh = F.T.conj().copy()
+
+        dflat = tstream.data[:].view(np.ndarray).reshape(-1, len(tstream.time))
+        wflat = tstream.weight[:].view(np.ndarray).reshape(-1, len(tstream.time))
+
+        Si = np.identity(2 * nmodes) * self.prior**-2
+
+        for ii in range(dflat.shape[0]):
+            d, w = dflat[ii], wflat[ii]
+
+            wsum = w.sum()
+            if wsum == 0:
+                continue
+
+            m = np.sum(d * w) / wsum
+
+            # dirty = Fh @ ((d - m) * w)
+            # Ci = Fh @ (w[:, np.newaxis] * F)
+            d -= m
+            dirty = np.dot(Fh, (d * w))
+            Ci = np.dot(Fh, w[:, np.newaxis] * F)
+            Ci += Si
+
+            f_lpf = la.solve(Ci, dirty, assume_a="pos")
+
+            # As we know the result will be real, split up the matrix multiplication to
+            # guarantee this
+            t_lpf = np.dot(F.real, f_lpf.real) - np.dot(F.imag, f_lpf.imag)
+            d -= t_lpf
+
+        return tstream

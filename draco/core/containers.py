@@ -60,8 +60,9 @@ their own custom container types.
 - :py:meth:`empty_like`
 - :py:meth:`empty_timestream`
 """
+
 import inspect
-from typing import List, Optional, Union
+from typing import ClassVar, List, Optional, Union
 
 import numpy as np
 from caput import memh5, mpiarray, tod
@@ -149,7 +150,7 @@ class ContainerBase(memh5.BasicCont):
 
     _axes = ()
 
-    _dataset_spec = {}
+    _dataset_spec: ClassVar = {}
 
     convert_attribute_strings = True
     convert_dataset_strings = True
@@ -201,7 +202,7 @@ class ContainerBase(memh5.BasicCont):
                 copy_axis_attrs = False
 
                 # If axis is an integer, turn into an arange as a default definition
-                if isinstance(axis_map, int):
+                if isinstance(axis_map, (int, np.integer)):
                     axis_map = np.arange(axis_map)
 
             # If no valid map provided in arguments copy from another object if set
@@ -222,7 +223,7 @@ class ContainerBase(memh5.BasicCont):
         # Iterate over datasets and initialise any that specify it
         if not skip_datasets:
             for name, spec in self.dataset_spec.items():
-                if "initialise" in spec and spec["initialise"]:
+                if spec.get("initialise"):
                     self.add_dataset(name)
 
         # Copy over datasets that have compatible axes
@@ -396,15 +397,15 @@ class ContainerBase(memh5.BasicCont):
                 out[name] = value
         return memh5.ro_dict(out)
 
-    @property
-    def dataset_spec(self):
-        """Return a copy of the fully resolved dataset specifiction as a dictionary."""
+    @classmethod
+    def _class_dataset_spec(cls):
+        """Get the inherited set of dataset spec entries."""
         ddict = {}
 
-        # Iterate over the reversed MRO and look for _table_spec attributes
+        # Iterate over the reversed MRO and look for _dataset_spec attributes
         # which get added to a temporary dict. We go over the reversed MRO so
-        # that the `tdict.update` overrides tables in base classes.`
-        for cls in inspect.getmro(self.__class__)[::-1]:
+        # that the `ddict.update` overrides datasets in base classes.`
+        for cls in inspect.getmro(cls)[::-1]:
             try:
                 # NOTE: this is a little ugly as the following line will drop
                 # down to base classes if dataset_spec isn't present, and thus
@@ -412,6 +413,14 @@ class ContainerBase(memh5.BasicCont):
                 ddict.update(cls._dataset_spec)
             except AttributeError:
                 pass
+
+        # Ensure that the dataset_spec is the same order on all ranks
+        return {k: ddict[k] for k in sorted(ddict)}
+
+    @property
+    def dataset_spec(self):
+        """Return a copy of the fully resolved dataset specifiction as a dictionary."""
+        ddict = self.__class__._class_dataset_spec()
 
         # Add in any _dataset_spec found on the instance
         ddict.update(self.__dict__.get("_dataset_spec", {}))
@@ -471,11 +480,11 @@ class ContainerBase(memh5.BasicCont):
         # Check if all those axes exist
         for axis in sel_args.keys():
             if axis not in cls._class_axes():
-                raise RuntimeError("No '{}' axis found to select from.".format(axis))
+                raise RuntimeError(f"No '{axis}' axis found to select from.")
 
         # Build selections dict
         selections = {}
-        for name, dataset in cls._dataset_spec.items():
+        for name, dataset in cls._class_dataset_spec().items():
             ds_axes = dataset["axes"]
             sel = []
             ds_relevant = False
@@ -610,7 +619,7 @@ class TableBase(ContainerBase):
         }
     """
 
-    _table_spec = {}
+    _table_spec: ClassVar = {}
 
     def __init__(self, *args, **kwargs):
         # Get the dataset specifiction for this class (not any base classes), or
@@ -643,7 +652,7 @@ class TableBase(ContainerBase):
         self._dataset_spec = dspec
         self._axes = axes
 
-        super(TableBase, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def _create_dtype(self, columns):
         """Take a dictionary of columns and turn into the appropriate compound data type."""
@@ -682,7 +691,63 @@ class TODContainer(ContainerBase, tod.TOData):
     _axes = ("time",)
 
 
-class VisContainer(ContainerBase):
+class DataWeightContainer(ContainerBase):
+    """A base class for containers with generic data/weight datasets.
+
+    This is meant such that tasks can operate generically over containers with this
+    common structure. The data and weight datasets are expected to have the same size,
+    though this isn't checked. Subclasses must define `_data_dset_name` and
+    `_weight_dset_name`.
+    """
+
+    _data_dset_name: Optional[str] = None
+    _weight_dset_name: Optional[str] = None
+
+    @property
+    def data(self) -> memh5.MemDataset:
+        """The main dataset."""
+        if self._data_dset_name is None:
+            raise RuntimeError(f"Type {type(self)} has not defined `_data_dset_name`.")
+
+        dset = self[self._data_dset_name]
+
+        if not isinstance(dset, memh5.MemDataset):
+            raise TypeError(f"/{self._data_dset_name} is not a dataset")
+
+        return dset
+
+    @property
+    def weight(self) -> memh5.MemDataset:
+        """The weights for each data point."""
+        if not self._weight_dset_name:
+            raise RuntimeError(
+                f"Type {type(self)} has not defined `_weight_dset_name`."
+            )
+
+        dset = self[self._weight_dset_name]
+
+        if not isinstance(dset, memh5.MemDataset):
+            raise TypeError(f"/{self._weight_dset_name} is not a dataset")
+
+        return dset
+
+
+class VisBase(DataWeightContainer):
+    """A very basic class for visibility data.
+
+    For better support for input/prod/stack structured data use `VisContainer`.
+    """
+
+    _data_dset_name = "vis"
+    _weight_dset_name = "vis_weight"
+
+    @property
+    def vis(self):
+        """The visibility like dataset."""
+        return self.datasets["vis"]
+
+
+class VisContainer(VisBase):
     """A base container for holding a visibility dataset.
 
     This works like a :class:`ContainerBase` container, with the
@@ -743,7 +808,7 @@ class VisContainer(ContainerBase):
             kwargs["stack"] = stack
 
         # Call initializer from `ContainerBase`
-        super(VisContainer, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         reverse_map_stack = None
         # Create reverse map
@@ -762,16 +827,6 @@ class VisContainer(ContainerBase):
         # classes that actually need a reverse stack
         if reverse_map_stack is not None:
             self.create_reverse_map("stack", reverse_map_stack)
-
-    @property
-    def vis(self):
-        """The visibility like dataset."""
-        return self.datasets["vis"]
-
-    @property
-    def weight(self):
-        """The visibility weights."""
-        return self.datasets["vis_weight"]
 
     @property
     def input(self):
@@ -840,7 +895,7 @@ class SampleVarianceContainer(ContainerBase):
                 dtype=[("component_a", "<U8"), ("component_b", "<U8")],
             )
 
-        super(SampleVarianceContainer, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     @property
     def component(self):
@@ -849,7 +904,7 @@ class SampleVarianceContainer(ContainerBase):
 
     @property
     def sample_variance(self):
-        """Convience access to the sample variance dataset.
+        """Convenience access to the sample variance dataset.
 
         Returns
         -------
@@ -862,8 +917,8 @@ class SampleVarianceContainer(ContainerBase):
         """
         if "sample_variance" in self.datasets:
             return self.datasets["sample_variance"]
-        else:
-            raise KeyError("Dataset 'sample_variance' not initialised.")
+
+        raise KeyError("Dataset 'sample_variance' not initialised.")
 
     @property
     def sample_variance_iq(self):
@@ -918,8 +973,8 @@ class SampleVarianceContainer(ContainerBase):
         """Get the nsample dataset if it exists."""
         if "nsample" in self.datasets:
             return self.datasets["nsample"]
-        else:
-            raise KeyError("Dataset 'nsample' not initialised.")
+
+        raise KeyError("Dataset 'nsample' not initialised.")
 
     @property
     def sample_weight(self):
@@ -1073,7 +1128,7 @@ class HealpixContainer(ContainerBase):
 
 
 class Map(FreqContainer, HealpixContainer):
-    """Container for holding multifrequency sky maps.
+    """Container for holding multi-frequency sky maps.
 
     The maps are packed in format `[freq, pol, pixel]` where the polarisations
     are Stokes I, Q, U and V, and the pixel dimension stores a Healpix map.
@@ -1089,7 +1144,7 @@ class Map(FreqContainer, HealpixContainer):
 
     _axes = ("pol",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "map": {
             "axes": ["freq", "pol", "pixel"],
             "dtype": np.float64,
@@ -1124,7 +1179,7 @@ class SiderealStream(
         The number of points to divide the RA axis up into.
     """
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["freq", "stack", "ra"],
             "dtype": np.complex64,
@@ -1213,7 +1268,7 @@ class SystemSensitivity(FreqContainer, TODContainer):
 
     _axes = ("pol",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "measured": {
             "axes": ["freq", "pol", "time"],
             "dtype": np.float32,
@@ -1273,7 +1328,7 @@ class RFIMask(FreqContainer, TODContainer):
     `False` for clean samples.
     """
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["freq", "time"],
             "dtype": bool,
@@ -1296,7 +1351,7 @@ class SiderealRFIMask(FreqContainer, SiderealContainer):
     `False` for clean samples.
     """
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["freq", "ra"],
             "dtype": bool,
@@ -1323,7 +1378,7 @@ class BaselineMask(FreqContainer, TODContainer):
 
     _axes = ("stack",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["freq", "stack", "time"],
             "dtype": bool,
@@ -1355,7 +1410,7 @@ class SiderealBaselineMask(FreqContainer, SiderealContainer):
 
     _axes = ("stack",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["freq", "stack", "ra"],
             "dtype": bool,
@@ -1384,7 +1439,7 @@ class TimeStream(FreqContainer, VisContainer, TODContainer):
     interchangably in most cases.
     """
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["freq", "stack", "time"],
             "dtype": np.complex64,
@@ -1435,12 +1490,12 @@ class TimeStream(FreqContainer, VisContainer, TODContainer):
         return self.datasets["input_flags"]
 
 
-class GridBeam(FreqContainer):
+class GridBeam(FreqContainer, DataWeightContainer):
     """Generic container for representing a 2D beam on a rectangular grid."""
 
     _axes = ("pol", "input", "theta", "phi")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "beam": {
             "axes": ["freq", "pol", "input", "theta", "phi"],
             "dtype": np.complex64,
@@ -1471,19 +1526,17 @@ class GridBeam(FreqContainer):
         },
     }
 
+    _data_dset_name = "beam"
+    _weight_dset_name = "weight"
+
     def __init__(self, coords="celestial", *args, **kwargs):
-        super(GridBeam, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.attrs["coords"] = coords
 
     @property
     def beam(self):
         """Get the beam dataset."""
         return self.datasets["beam"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
     @property
     def quality(self):
@@ -1521,7 +1574,7 @@ class GridBeam(FreqContainer):
         return self.index_map["phi"]
 
 
-class HEALPixBeam(FreqContainer, HealpixContainer):
+class HEALPixBeam(FreqContainer, HealpixContainer, DataWeightContainer):
     """Container for representing the spherical 2-d beam in a HEALPix grid.
 
     Parameters
@@ -1534,7 +1587,7 @@ class HEALPixBeam(FreqContainer, HealpixContainer):
 
     _axes = ("pol", "input")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "beam": {
             "axes": ["freq", "pol", "input", "pixel"],
             "dtype": [("Et", np.complex64), ("Ep", np.complex64)],
@@ -1551,8 +1604,11 @@ class HEALPixBeam(FreqContainer, HealpixContainer):
         },
     }
 
+    _data_dset_name = "beam"
+    _weight_dset_name = "weight"
+
     def __init__(self, coords="unknown", ordering="unknown", *args, **kwargs):
-        super(HEALPixBeam, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.attrs["coords"] = coords
         self.attrs["ordering"] = ordering
 
@@ -1560,11 +1616,6 @@ class HEALPixBeam(FreqContainer, HealpixContainer):
     def beam(self):
         """Get the beam dataset."""
         return self.datasets["beam"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
     @property
     def ordering(self):
@@ -1592,7 +1643,7 @@ class HEALPixBeam(FreqContainer, HealpixContainer):
         return int(np.sqrt(len(self.index_map["pixel"]) / 12))
 
 
-class TrackBeam(FreqContainer, SampleVarianceContainer):
+class TrackBeam(FreqContainer, SampleVarianceContainer, DataWeightContainer):
     """Container for a sequence of beam samples at arbitrary locations on the sphere.
 
     The axis of the beam samples is 'pix', defined by the numpy.dtype
@@ -1601,7 +1652,7 @@ class TrackBeam(FreqContainer, SampleVarianceContainer):
 
     _axes = ("pol", "input", "pix")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "beam": {
             "axes": ["freq", "pol", "input", "pix"],
             "dtype": np.complex64,
@@ -1649,6 +1700,9 @@ class TrackBeam(FreqContainer, SampleVarianceContainer):
         },
     }
 
+    _data_dset_name = "beam"
+    _weight_dset_name = "weight"
+
     def __init__(
         self,
         theta=None,
@@ -1662,19 +1716,19 @@ class TrackBeam(FreqContainer, SampleVarianceContainer):
             if len(theta) != len(phi):
                 raise RuntimeError(
                     "theta and phi axes must have same length: "
-                    "({:d} != {:d})".format(len(theta), len(phi))
+                    f"({len(theta)} != {len(phi)})"
                 )
-            else:
-                pix = np.zeros(
-                    len(theta), dtype=[("theta", np.float32), ("phi", np.float32)]
-                )
-                pix["theta"] = theta
-                pix["phi"] = phi
-                kwargs["pix"] = pix
+
+            pix = np.zeros(
+                len(theta), dtype=[("theta", np.float32), ("phi", np.float32)]
+            )
+            pix["theta"] = theta
+            pix["phi"] = phi
+            kwargs["pix"] = pix
         elif (theta is None) != (phi is None):
             raise RuntimeError("Both theta and phi coordinates must be specified.")
 
-        super(TrackBeam, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.attrs["coords"] = coords
         self.attrs["track_type"] = track_type
@@ -1683,11 +1737,6 @@ class TrackBeam(FreqContainer, SampleVarianceContainer):
     def beam(self):
         """Get the beam dataset."""
         return self.datasets["beam"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
     @property
     def gain(self):
@@ -1736,7 +1785,7 @@ class MModes(FreqContainer, VisContainer, MContainer):
         Array of weights for each point.
     """
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["m", "msign", "freq", "stack"],
             "dtype": np.complex128,
@@ -1754,7 +1803,7 @@ class MModes(FreqContainer, VisContainer, MContainer):
     }
 
 
-class SVDModes(MContainer):
+class SVDModes(MContainer, VisBase):
     """Parallel container for holding SVD m-mode data.
 
     Parameters
@@ -1765,7 +1814,7 @@ class SVDModes(MContainer):
 
     _axes = ("mode",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["m", "mode"],
             "dtype": np.complex128,
@@ -1790,19 +1839,9 @@ class SVDModes(MContainer):
     }
 
     @property
-    def vis(self):
-        """Get the visibility dataset."""
-        return self.datasets["vis"]
-
-    @property
     def nmode(self):
         """Get the nmode dataset."""
         return self.datasets["nmode"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["vis_weight"]
 
 
 class KLModes(SVDModes):
@@ -1817,7 +1856,7 @@ class KLModes(SVDModes):
     pass
 
 
-class VisGridStream(FreqContainer, SiderealContainer):
+class VisGridStream(FreqContainer, SiderealContainer, VisBase):
     """Visibilities gridded into a 2D array.
 
     Only makes sense for an array which is a cartesian grid.
@@ -1825,7 +1864,7 @@ class VisGridStream(FreqContainer, SiderealContainer):
 
     _axes = ("pol", "ew", "ns")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["pol", "freq", "ew", "ns", "ra"],
             "dtype": np.complex64,
@@ -1862,22 +1901,12 @@ class VisGridStream(FreqContainer, SiderealContainer):
     }
 
     @property
-    def vis(self):
-        """Get the vis dataset."""
-        return self.datasets["vis"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["vis_weight"]
-
-    @property
     def redundancy(self):
         """Get the redundancy dataset."""
         return self.datasets["redundancy"]
 
 
-class HybridVisStream(FreqContainer, SiderealContainer):
+class HybridVisStream(FreqContainer, SiderealContainer, VisBase):
     """Visibilities beamformed only in the NS direction.
 
     This container has visibilities beam formed only in the NS direction to give a
@@ -1886,7 +1915,7 @@ class HybridVisStream(FreqContainer, SiderealContainer):
 
     _axes = ("pol", "ew", "el")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["pol", "freq", "ew", "el", "ra"],
             "dtype": np.complex64,
@@ -1911,22 +1940,12 @@ class HybridVisStream(FreqContainer, SiderealContainer):
     }
 
     @property
-    def vis(self):
-        """Get the vis dataset."""
-        return self.datasets["vis"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["vis_weight"]
-
-    @property
     def dirty_beam(self):
         """Not useful at this stage, but it's needed to propagate onward."""
         return self.datasets["dirty_beam"]
 
 
-class HybridVisMModes(FreqContainer, MContainer):
+class HybridVisMModes(FreqContainer, MContainer, VisBase):
     """Visibilities beamformed in the NS direction and m-mode transformed in RA.
 
     This container has visibilities beam formed only in the NS direction to give a
@@ -1935,7 +1954,7 @@ class HybridVisMModes(FreqContainer, MContainer):
 
     _axes = ("pol", "ew", "el")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "vis": {
             "axes": ["m", "msign", "pol", "freq", "ew", "el"],
             "dtype": np.complex64,
@@ -1952,21 +1971,8 @@ class HybridVisMModes(FreqContainer, MContainer):
         },
     }
 
-    @property
-    def vis(self):
-        """Get the vis dataset."""
-        return self.datasets["vis"]
 
-    @property
-    def weight(self):
-        """Get the weight dataset.
-
-        The actual dataset entry is `vis_weight`.
-        """
-        return self.datasets["vis_weight"]
-
-
-class RingMap(FreqContainer, SiderealContainer):
+class RingMap(FreqContainer, SiderealContainer, DataWeightContainer):
     """Container for holding multifrequency ring maps.
 
     The maps are packed in format `[freq, pol, ra, EW beam, el]` where
@@ -1983,7 +1989,7 @@ class RingMap(FreqContainer, SiderealContainer):
 
     _axes = ("pol", "beam", "el")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "map": {
             "axes": ["beam", "pol", "freq", "ra", "el"],
             "dtype": np.float64,
@@ -2032,6 +2038,9 @@ class RingMap(FreqContainer, SiderealContainer):
         },
     }
 
+    _data_dset_name = "map"
+    _weight_dset_name = "weight"
+
     @property
     def pol(self):
         """Get the pol axis."""
@@ -2053,11 +2062,6 @@ class RingMap(FreqContainer, SiderealContainer):
         return self.datasets["rms"]
 
     @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
-
-    @property
     def dirty_beam(self):
         """Get the dirty beam dataset."""
         return self.datasets["dirty_beam"]
@@ -2068,7 +2072,7 @@ class RingMapMask(FreqContainer, SiderealContainer):
 
     _axes = ("pol", "el")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["pol", "freq", "ra", "el"],
             "dtype": bool,
@@ -2084,10 +2088,37 @@ class RingMapMask(FreqContainer, SiderealContainer):
         return self.datasets["mask"]
 
 
-class CommonModeGainData(FreqContainer, TODContainer):
+class GainDataBase(DataWeightContainer):
+    """A container interface for gain-like data.
+
+    To support the previous behaviour of gain type data the weight dataset is optional,
+    and returns None if it is not present.
+    """
+
+    _data_dset_name = "gain"
+    _weight_dset_name = "weight"
+
+    @property
+    def gain(self) -> memh5.MemDataset:
+        """Get the gain dataset."""
+        return self.datasets["gain"]
+
+    @property
+    def weight(self) -> Optional[memh5.MemDataset]:
+        """The weights for each data point.
+
+        Returns None is no weight dataset exists.
+        """
+        try:
+            return super().weight
+        except KeyError:
+            return None
+
+
+class CommonModeGainData(FreqContainer, TODContainer, GainDataBase):
     """Parallel container for holding gain data common to all inputs."""
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "gain": {
             "axes": ["freq", "time"],
             "dtype": np.complex128,
@@ -2104,24 +2135,11 @@ class CommonModeGainData(FreqContainer, TODContainer):
         },
     }
 
-    @property
-    def gain(self):
-        """Get the gain dataset."""
-        return self.datasets["gain"]
 
-    @property
-    def weight(self):
-        """Get the weight dataset if it exists."""
-        try:
-            return self.datasets["weight"]
-        except KeyError:
-            return None
-
-
-class CommonModeSiderealGainData(FreqContainer, SiderealContainer):
+class CommonModeSiderealGainData(FreqContainer, SiderealContainer, GainDataBase):
     """Parallel container for holding sidereal gain data common to all inputs."""
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "gain": {
             "axes": ["freq", "ra"],
             "dtype": np.complex128,
@@ -2138,26 +2156,13 @@ class CommonModeSiderealGainData(FreqContainer, SiderealContainer):
         },
     }
 
-    @property
-    def gain(self):
-        """Get the gain dataset."""
-        return self.datasets["gain"]
 
-    @property
-    def weight(self):
-        """Get the weight dataset if it exists."""
-        try:
-            return self.datasets["weight"]
-        except KeyError:
-            return None
-
-
-class GainData(FreqContainer, TODContainer):
+class GainData(FreqContainer, TODContainer, GainDataBase):
     """Parallel container for holding gain data."""
 
     _axes = ("input",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "gain": {
             "axes": ["freq", "input", "time"],
             "dtype": np.complex128,
@@ -2181,19 +2186,6 @@ class GainData(FreqContainer, TODContainer):
     }
 
     @property
-    def gain(self):
-        """Get the gain dataset."""
-        return self.datasets["gain"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset if it exists."""
-        try:
-            return self.datasets["weight"]
-        except KeyError:
-            return None
-
-    @property
     def update_id(self):
         """Get the update id dataset if it exists."""
         try:
@@ -2205,6 +2197,7 @@ class GainData(FreqContainer, TODContainer):
     def input(self):
         """Get the input axis."""
         return self.index_map["input"]
+
 
 
 class VisCrosstalkGain(FreqContainer, SiderealContainer):
@@ -2387,12 +2380,12 @@ class VisFocalCrosstalkGainGrid(FreqContainer, SiderealContainer):
     }
     
 
-class SiderealGainData(FreqContainer, SiderealContainer):
+class SiderealGainData(FreqContainer, SiderealContainer, GainDataBase):
     """Parallel container for holding sidereal gain data."""
 
     _axes = ("input",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "gain": {
             "axes": ["freq", "input", "ra"],
             "dtype": np.complex128,
@@ -2408,19 +2401,6 @@ class SiderealGainData(FreqContainer, SiderealContainer):
             "distributed_axis": "freq",
         },
     }
-
-    @property
-    def gain(self):
-        """Get the gain dataset."""
-        return self.datasets["gain"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset if it exists."""
-        try:
-            return self.datasets["weight"]
-        except KeyError:
-            return None
 
     @property
     def input(self):
@@ -2428,12 +2408,12 @@ class SiderealGainData(FreqContainer, SiderealContainer):
         return self.index_map["input"]
 
 
-class StaticGainData(FreqContainer):
+class StaticGainData(FreqContainer, GainDataBase):
     """Parallel container for holding static gain data (i.e. non time varying)."""
 
     _axes = ("input",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "gain": {
             "axes": ["freq", "input"],
             "dtype": np.complex128,
@@ -2449,16 +2429,6 @@ class StaticGainData(FreqContainer):
             "distributed_axis": "freq",
         },
     }
-
-    @property
-    def gain(self):
-        """Get the gain dataset."""
-        return self.datasets["gain"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
     @property
     def input(self):
@@ -2471,7 +2441,7 @@ class DelayCutoff(ContainerBase):
 
     _axes = ("pol", "el")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "cutoff": {
             "axes": ["pol", "el"],
             "dtype": np.float64,
@@ -2497,7 +2467,18 @@ class DelayCutoff(ContainerBase):
         return self.index_map["el"]
 
 
-class DelaySpectrum(ContainerBase):
+class DelayContainer(ContainerBase):
+    """A container with a delay axis."""
+
+    _axes = ("delay",)
+
+    @property
+    def delay(self) -> np.ndarray:
+        """The delay axis in microseconds."""
+        return self.index_map["delay"]
+
+
+class DelaySpectrum(DelayContainer):
     """Container for a delay power spectrum.
 
     Notes
@@ -2511,20 +2492,27 @@ class DelaySpectrum(ContainerBase):
     container.
     """
 
-    _axes = ("baseline", "delay")
+    _axes = ("baseline", "sample")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "spectrum": {
             "axes": ["baseline", "delay"],
             "dtype": np.float64,
             "initialise": True,
             "distributed": True,
             "distributed_axis": "baseline",
-        }
+        },
+        "spectrum_samples": {
+            "axes": ["sample", "baseline", "delay"],
+            "dtype": np.float64,
+            "initialise": False,
+            "distributed": True,
+            "distributed_axis": "baseline",
+        },
     }
 
-    def __init__(self, weight_boost=1.0, *args, **kwargs):
-        super(DelaySpectrum, self).__init__(*args, **kwargs)
+    def __init__(self, *args, weight_boost=1.0, sample=1, **kwargs):
+        super().__init__(*args, sample=sample, **kwargs)
         self.attrs["weight_boost"] = weight_boost
 
     @property
@@ -2547,7 +2535,7 @@ class DelaySpectrum(ContainerBase):
         return self.attrs["freq"]
 
 
-class DelayTransform(ContainerBase):
+class DelayTransform(DelayContainer):
     """Container for a delay spectrum.
 
     Notes
@@ -2556,9 +2544,9 @@ class DelayTransform(ContainerBase):
     description of the difference between `DelayTransform` and `DelaySpectrum`.
     """
 
-    _axes = ("baseline", "sample", "delay")
+    _axes = ("baseline", "sample")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "spectrum": {
             "axes": ["baseline", "sample", "delay"],
             "dtype": np.complex128,
@@ -2569,7 +2557,7 @@ class DelayTransform(ContainerBase):
     }
 
     def __init__(self, weight_boost=1.0, *args, **kwargs):
-        super(DelayTransform, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.attrs["weight_boost"] = weight_boost
 
     @property
@@ -2590,6 +2578,64 @@ class DelayTransform(ContainerBase):
     def freq(self):
         """Get the frequency axis of the input data."""
         return self.attrs["freq"]
+
+
+class WaveletSpectrum(FreqContainer, DelayContainer, DataWeightContainer):
+    """Container for a wavelet power spectrum."""
+
+    _axes = ("baseline",)
+
+    _dataset_spec: ClassVar = {
+        "spectrum": {
+            "axes": ["baseline", "delay", "freq"],
+            "dtype": np.float64,
+            "initialise": True,
+            "distributed": True,
+            "distributed_axis": "baseline",
+        },
+        "weight": {
+            "axes": ["baseline", "freq"],
+            "dtype": np.float64,
+            "initialise": True,
+            "distributed": True,
+            "distributed_axis": "baseline",
+        },
+    }
+    _data_dset_name = "spectrum"
+    _weight_dset_name = "weight"
+
+    @property
+    def spectrum(self):
+        """The wavelet spectrum."""
+        return self.datasets["spectrum"]
+
+
+class DelayCrossSpectrum(DelaySpectrum):
+    """Container for a delay cross power spectra."""
+
+    _axes = ("dataset",)
+
+    _dataset_spec: ClassVar = {
+        "spectrum": {
+            "axes": ["dataset", "dataset", "baseline", "delay"],
+            "dtype": np.float64,
+            "initialise": True,
+            "distributed": True,
+            "distributed_axis": "baseline",
+        },
+        "spectrum_samples": {
+            "axes": ["sample", "dataset", "dataset", "baseline", "delay"],
+            "dtype": np.float64,
+            "initialise": False,
+            "distributed": True,
+            "distributed_axis": "baseline",
+        },
+    }
+
+    @property
+    def spectrum(self):
+        """Get the spectrum dataset."""
+        return self.datasets["spectrum"]
 
 
 class Powerspectrum2D(ContainerBase):
@@ -2618,7 +2664,7 @@ class Powerspectrum2D(ContainerBase):
 
     _axes = ("kperp", "kpar")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "powerspectrum": {
             "axes": ["kperp", "kpar"],
             "dtype": np.float64,
@@ -2652,7 +2698,7 @@ class Powerspectrum2D(ContainerBase):
                 [centre, width], names=["centre", "width"]
             ).view(np.ndarray)
 
-        super(Powerspectrum2D, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     @property
     def powerspectrum(self):
@@ -2670,7 +2716,7 @@ class SVDSpectrum(ContainerBase):
 
     _axes = ("m", "singularvalue")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "spectrum": {
             "axes": ["m", "singularvalue"],
             "dtype": np.float64,
@@ -2686,7 +2732,7 @@ class SVDSpectrum(ContainerBase):
         return self.datasets["spectrum"]
 
 
-class FrequencyStack(FreqContainer):
+class FrequencyStack(FreqContainer, DataWeightContainer):
     """Container for a frequency stack.
 
     In general used to hold the product of `draco.analysis.SourceStack`
@@ -2694,7 +2740,7 @@ class FrequencyStack(FreqContainer):
     of sources of interest.
     """
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "stack": {
             "axes": ["freq"],
             "dtype": np.float64,
@@ -2709,15 +2755,13 @@ class FrequencyStack(FreqContainer):
         },
     }
 
+    _data_dset_name = "stack"
+    _weight_dset_name = "weight"
+
     @property
     def stack(self):
         """Get the stack dataset."""
         return self.datasets["stack"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
 
 class FrequencyStackByPol(FrequencyStack):
@@ -2725,7 +2769,7 @@ class FrequencyStackByPol(FrequencyStack):
 
     _axes = ("pol",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "stack": {
             "axes": ["pol", "freq"],
             "dtype": np.float64,
@@ -2754,7 +2798,7 @@ class MockFrequencyStack(FrequencyStack):
 
     _axes = ("mock",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "stack": {
             "axes": ["mock", "freq"],
             "dtype": np.float64,
@@ -2778,7 +2822,7 @@ class MockFrequencyStackByPol(FrequencyStackByPol):
 
     _axes = ("mock",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "stack": {
             "axes": ["mock", "pol", "freq"],
             "dtype": np.float64,
@@ -2794,12 +2838,12 @@ class MockFrequencyStackByPol(FrequencyStackByPol):
     }
 
 
-class Stack3D(FreqContainer):
+class Stack3D(FreqContainer, DataWeightContainer):
     """Container for a 3D frequency stack."""
 
     _axes = ("pol", "delta_ra", "delta_dec")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "stack": {
             "axes": ["pol", "delta_ra", "delta_dec", "freq"],
             "dtype": np.float64,
@@ -2813,16 +2857,14 @@ class Stack3D(FreqContainer):
             "distributed": False,
         },
     }
+
+    _data_dset_name = "stack"
+    _weight_dset_name = "weight"
 
     @property
     def stack(self):
         """Get the stack dataset."""
         return self.datasets["stack"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
 
 class SourceCatalog(TableBase):
@@ -2833,7 +2875,7 @@ class SourceCatalog(TableBase):
     The `ra` and `dec` coordinates should be ICRS.
     """
 
-    _table_spec = {
+    _table_spec: ClassVar = {
         "position": {
             "columns": [["ra", np.float64], ["dec", np.float64]],
             "axis": "object_id",
@@ -2844,7 +2886,7 @@ class SourceCatalog(TableBase):
 class SpectroscopicCatalog(SourceCatalog):
     """A container for spectroscopic catalogs."""
 
-    _table_spec = {
+    _table_spec: ClassVar = {
         "redshift": {
             "columns": [["z", np.float64], ["z_error", np.float64]],
             "axis": "object_id",
@@ -2852,12 +2894,12 @@ class SpectroscopicCatalog(SourceCatalog):
     }
 
 
-class FormedBeam(FreqContainer):
+class FormedBeam(FreqContainer, DataWeightContainer):
     """Container for formed beams."""
 
     _axes = ("object_id", "pol")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "beam": {
             "axes": ["object_id", "pol", "freq"],
             "dtype": np.float64,
@@ -2886,15 +2928,13 @@ class FormedBeam(FreqContainer):
         },
     }
 
+    _data_dset_name = "beam"
+    _weight_dset_name = "weight"
+
     @property
     def beam(self):
         """Get the beam dataset."""
         return self.datasets["beam"]
-
-    @property
-    def weight(self):
-        """Get the weight dataset."""
-        return self.datasets["weight"]
 
     @property
     def frequency(self):
@@ -2920,7 +2960,7 @@ class FormedBeamHA(FormedBeam):
 
     _axes = ("ha",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "beam": {
             "axes": ["object_id", "pol", "freq", "ha"],
             "dtype": np.float64,
@@ -2954,7 +2994,7 @@ class FormedBeamMask(FreqContainer):
 
     _axes = ("object_id", "pol")
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["object_id", "pol", "freq"],
             "dtype": bool,
@@ -2975,7 +3015,7 @@ class FormedBeamHAMask(FormedBeamMask):
 
     _axes = ("ha",)
 
-    _dataset_spec = {
+    _dataset_spec: ClassVar = {
         "mask": {
             "axes": ["object_id", "pol", "freq", "ha"],
             "dtype": bool,
@@ -3005,10 +3045,10 @@ def empty_like(obj, **kwargs):
     """
     if isinstance(obj, ContainerBase):
         return obj.__class__(axes_from=obj, attrs_from=obj, **kwargs)
-    else:
-        raise RuntimeError(
-            "I don't know how to deal with data type %s" % obj.__class__.__name__
-        )
+
+    raise RuntimeError(
+        f"I don't know how to deal with data type {obj.__class__.__name__}"
+    )
 
 
 def empty_timestream(**kwargs):
@@ -3034,7 +3074,7 @@ def copy_datasets_filter(
     dest: ContainerBase,
     axis: Union[str, list, tuple] = [],
     selection: Union[np.ndarray, list, slice, dict] = {},
-    exclude_axes: List[str] = None,
+    exclude_axes: Optional[List[str]] = None,
 ):
     """Copy datasets while filtering a given axis.
 

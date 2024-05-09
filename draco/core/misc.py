@@ -6,10 +6,9 @@ all be moved out into their own module.
 """
 
 import numpy as np
-
 from caput import config
 
-from ..core import task, containers
+from ..core import containers, task
 from ..util import tools
 
 
@@ -55,7 +54,7 @@ class ApplyGain(task.SingleTask):
             gain, (containers.CommonModeGainData, containers.CommonModeSiderealGainData)
         ):
             raise ValueError(
-                "Cannot apply input-dependent gains to stacked data: %s" % tstream
+                f"Cannot apply input-dependent gains to stacked data: {tstream!s}"
             )
 
         if isinstance(gain, containers.StaticGainData):
@@ -194,7 +193,7 @@ class AccumulateList(task.MPILoggedTask):
     """Accumulate the inputs into a list and return when the task *finishes*."""
 
     def __init__(self):
-        super(AccumulateList, self).__init__()
+        super().__init__()
         self._items = []
 
     def next(self, input_):
@@ -244,7 +243,7 @@ class CheckMPIEnvironment(task.MPILoggedTask):
         start_time = time.time()
 
         while time.time() - start_time < self.timeout:
-            success = all([r.get_status() for r in results])
+            success = all(r.get_status() for r in results)
 
             if success:
                 break
@@ -295,6 +294,18 @@ class WaitUntil(task.MPILoggedTask):
         """Accept, but don't save any input."""
         self.log.info("Received the requirement, starting to forward inputs")
         pass
+
+    def next(self, input_):
+        """Immediately forward any input."""
+        return input_
+
+
+class PassOn(task.MPILoggedTask):
+    """Unconditionally forward a tasks input.
+
+    While this seems like a pointless no-op it's useful for connecting tasks in complex
+    topologies.
+    """
 
     def next(self, input_):
         """Immediately forward any input."""

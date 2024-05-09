@@ -7,16 +7,15 @@ The convention for flagging/masking is `True` for contaminated samples that shou
 be excluded and `False` for clean samples.
 """
 
-from typing import Union, overload
 import warnings
+from typing import Union, overload
+
 import numpy as np
 import scipy.signal
+from caput import config, mpiarray, weighted_median
 
-from caput import config, weighted_median, mpiarray
-
-from ..core import task, containers, io
-from ..util import tools
-from ..util import rfi
+from ..core import containers, io, task
+from ..util import rfi, tools
 
 
 class DayMask(task.SingleTask):
@@ -934,6 +933,10 @@ class ThresholdVisWeightBaseline(task.SingleTask):
         # Save mask to output container
         mask_cont.mask[:] = mpiarray.MPIArray.wrap(local_mask, axis=1)
 
+        # Distribute back across frequency
+        mask_cont.redistribute("freq")
+        stream.redistribute("freq")
+
         return mask_cont
 
 
@@ -1223,9 +1226,7 @@ class RFISensitivityMask(task.SingleTask):
         nobaseflagsir = rfi.sir(nobaseflag[:, np.newaxis, :], eta=eta)[:, 0, :]
 
         # Make sure the original mask (including baseflag) is still masked
-        flagsir = nobaseflagsir | mask
-
-        return flagsir
+        return nobaseflagsir | mask
 
     def _mad_tv_mask(self, data, start_flag, freq):
         """Use the specific scattered TV channel flagging."""
@@ -1274,12 +1275,12 @@ class RFIMask(task.SingleTask):
     stack_ind = config.Property(proptype=int)
 
     @overload
-    def process(self, sstream: containers.SiderealStream) -> containers.SiderealRFIMask:
-        ...
+    def process(
+        self, sstream: containers.SiderealStream
+    ) -> containers.SiderealRFIMask: ...
 
     @overload
-    def process(self, sstream: containers.TimeStream) -> containers.RFIMask:
-        ...
+    def process(self, sstream: containers.TimeStream) -> containers.RFIMask: ...
 
     def process(
         self, sstream: Union[containers.TimeStream, containers.SiderealStream]
@@ -1478,14 +1479,12 @@ class ApplyBaselineMask(task.SingleTask):
     @overload
     def process(
         self, data: containers.TimeStream, mask: containers.BaselineMask
-    ) -> containers.TimeStream:
-        ...
+    ) -> containers.TimeStream: ...
 
     @overload
     def process(
         self, data: containers.SiderealStream, mask: containers.SiderealBaselineMask
-    ) -> containers.SiderealStream:
-        ...
+    ) -> containers.SiderealStream: ...
 
     def process(self, data, mask):
         """Flag data by zeroing the weights.
@@ -1686,7 +1685,7 @@ class MaskFreq(task.SingleTask):
 
         # Solve to find a value of f that minimises the amount of data masked
         res = minimize_scalar(
-            fmask, method="golden", options=dict(maxiter=20, xtol=1e-2)
+            fmask, method="golden", options={"maxiter": 20, "xtol": 1e-2}
         )
 
         if not res.success:
